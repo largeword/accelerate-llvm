@@ -29,7 +29,6 @@ import Data.Array.Accelerate.Error
 import Data.Array.Accelerate.Representation.Array
 import Data.Array.Accelerate.Representation.Type
 import Data.Array.Accelerate.Representation.Stencil
-import Data.Array.Accelerate.Trafo.Delayed
 
 import Data.Array.Accelerate.LLVM.Target
 

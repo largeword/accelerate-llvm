@@ -26,10 +26,9 @@ module Data.Array.Accelerate.LLVM.CodeGen.Permute (
 
 ) where
 
-import Data.Array.Accelerate.AST
+import Data.Array.Accelerate.AST.Operation
 import Data.Array.Accelerate.AST.Idx
 import Data.Array.Accelerate.AST.LeftHandSide
-import Data.Array.Accelerate.AST.Var
 import Data.Array.Accelerate.Debug.Internal
 import Data.Array.Accelerate.Error
 import Data.Array.Accelerate.Representation.Type
@@ -85,7 +84,7 @@ data IRPermuteFun arch aenv t where
 -- let-bindings.
 --
 llvmOfPermuteFun
-    :: forall arch aenv e. Foreign arch
+    :: forall arch aenv e. ForeignExp arch
     => Fun aenv (e -> e -> e)
     -> Gamma aenv
     -> IRPermuteFun arch aenv (e -> e -> e)

@@ -30,7 +30,6 @@ import Data.Array.Accelerate.AST                                    ( PreOpenAfu
 
 import Data.Array.Accelerate.LLVM.AST
 import Data.Array.Accelerate.LLVM.CodeGen.Environment
-import Data.Array.Accelerate.LLVM.Compile
 import Data.Array.Accelerate.LLVM.State
 
 import Control.Applicative                                          hiding ( Const )

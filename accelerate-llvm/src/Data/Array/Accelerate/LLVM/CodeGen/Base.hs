@@ -21,15 +21,10 @@ module Data.Array.Accelerate.LLVM.CodeGen.Base (
   Name(..),
   local, global,
 
-  -- Arrays
-  irArray,
-  mutableArray,
-  delayedArray,
-
   -- Functions & parameters
   call,
   parameter, scalarParameter, ptrParameter,
-  envParam,
+  -- envParam,
   arrayParam,
 
 ) where
@@ -53,7 +48,6 @@ import Data.Array.Accelerate.LLVM.CodeGen.Sugar
 import Data.Array.Accelerate.Representation.Array                   ( Array, ArrayR(..) )
 import Data.Array.Accelerate.Representation.Shape
 import Data.Array.Accelerate.Representation.Type
-import {-# SOURCE #-} Data.Array.Accelerate.LLVM.CodeGen.Exp
 
 import qualified LLVM.AST.Global                                    as LLVM
 
@@ -94,53 +88,6 @@ shapeName (UnName n) i = Name (     fromString (printf "%d.sh%d" n i))
 rename :: Name t -> Int -> Name t'                      -- for the i-th component of the named variable
 rename (Name   n) i = Name (n <> fromString (printf    "%d"   i))
 rename (UnName n) i = Name (     fromString (printf "%d.%d" n i))
-
-
--- | Names of array data elements
---
-{-# INLINEABLE irArray #-}
-irArray
-    :: ArrayR  (Array sh e)
-    -> Name    (Array sh e)
-    -> IRArray (Array sh e)
-irArray repr@(ArrayR shr tp) n
-  = IRArray repr
-            (travTypeToOperands (shapeType shr) (\t i -> LocalReference (PrimType (ScalarPrimType t)) (shapeName n i)))
-            (travTypeToOperands tp              (\t i -> LocalReference (PrimType (ScalarPrimType t)) (arrayName n i)))
-            defaultAddrSpace
-            NonVolatile
-
--- | Generate typed local names for array data components as well as function
--- parameters to bind those names
---
-{-# INLINEABLE mutableArray #-}
-mutableArray
-    :: ArrayR (Array sh e)
-    -> Name (Array sh e)
-    -> (IRArray (Array sh e), [LLVM.Parameter])
-mutableArray repr name =
-  ( irArray repr name
-  , arrayParam repr name )
-
--- | Generate a delayed array representation for input arrays which come in
--- either delayed (fused) or manifest representation.
---
-{-# INLINEABLE delayedArray #-}
-delayedArray
-    :: Name (Array sh e)
-    -> MIRDelayed arch aenv (Array sh e)
-    -> (IRDelayed arch aenv (Array sh e), [LLVM.Parameter])
-delayedArray name = \case
-  IRDelayedJust a -> (a, [])
-  IRDelayedNothing repr ->
-    let (arr, param) = mutableArray repr name
-    in ( IRDelayed { delayedRepr        = repr
-                  , delayedExtent      = return (irArrayShape arr)
-                  , delayedIndex       = IRFun1 (indexArray arr)
-                  , delayedLinearIndex = IRFun1 (linearIndexArray arr)
-                  }
-      , param
-      )
 
 {-# INLINEABLE travTypeToList #-}
 travTypeToList
@@ -223,6 +170,7 @@ ptrParameter :: ScalarType t -> Name (Ptr t) -> LLVM.Parameter
 ptrParameter t x = downcast (Parameter (PtrPrimType (ScalarPrimType t) defaultAddrSpace) x)
 
 
+{-
 -- | Unpack the array environment into a set of input parameters to a function.
 -- The environment here refers only to the actual free array variables that are
 -- accessed by the function.
@@ -232,7 +180,7 @@ envParam aenv = concatMap (\(Label n, Idx' repr _) -> toParam repr (Name n)) (IM
   where
     toParam :: ArrayR (Array sh e) -> Name (Array sh e) -> [LLVM.Parameter]
     toParam repr name = arrayParam repr name
-
+-}
 
 -- | Generate function parameters for an Array with given base name.
 --

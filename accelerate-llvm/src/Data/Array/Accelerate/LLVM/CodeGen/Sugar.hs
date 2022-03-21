@@ -18,16 +18,15 @@ module Data.Array.Accelerate.LLVM.CodeGen.Sugar (
   IRExp, MIRExp, IRFun1, IRFun2,
   IROpenExp, IROpenFun1(..), IROpenFun2(..),
   IROpenAcc(..),
-  IRDelayed(..), MIRDelayed(..),
 
-  IRArray(..),
+  IRBuffer(..),
 
 ) where
 
 import LLVM.AST.Type.AddrSpace
 import LLVM.AST.Type.Instruction.Volatile
-
-import Data.Array.Accelerate.Representation.Array
+import LLVM.AST.Type.Operand
+import Foreign.Ptr
 
 import Data.Array.Accelerate.LLVM.CodeGen.IR
 import Data.Array.Accelerate.LLVM.CodeGen.Module
@@ -63,24 +62,19 @@ data IROpenAcc arch aenv arrs where
   IROpenAcc :: [Kernel arch aenv arrs]
             -> IROpenAcc arch aenv arrs
 
-data MIRDelayed arch aenv a
-  = IRDelayedJust (IRDelayed arch aenv a)
-  | IRDelayedNothing (ArrayR a)
+data IRBuffer e
+  = IRBuffer
+      -- If the buffer is not fused away, then a pointer to the buffer, its
+      -- address space and volatility are stored.
+      --
+      (Maybe (Operand (Ptr e), AddrSpace, Volatility))
+      -- If the buffer is fused away, then it is replaced by a local variable.
+      -- In case of diagonal fusion, the buffer does exist but later reads to
+      -- the buffer are replaced by a local variable. That variable is stored
+      -- here. Note that we here assume that reads and writes to this buffer
+      -- are all to the same index. Fusion should assure that this property
+      -- holds.
+      --
+      (Maybe (Operand e))
 
-data IRDelayed arch aenv a where
-  IRDelayed :: { delayedRepr        :: ArrayR (Array sh e)
-               , delayedExtent      :: IRExp  arch aenv sh
-               , delayedIndex       :: IRFun1 arch aenv (sh -> e)
-               , delayedLinearIndex :: IRFun1 arch aenv (Int -> e)
-               }
-            -> IRDelayed arch aenv (Array sh e)
-
-data IRArray a where
-  IRArray :: { irArrayRepr        :: ArrayR (Array sh e)
-             , irArrayShape       :: Operands sh        -- Array extent
-             , irArrayData        :: Operands e         -- Array payloads (should really be 'Ptr e')
-             , irArrayAddrSpace   :: AddrSpace
-             , irArrayVolatility  :: Volatility
-             }
-          -> IRArray (Array sh e)
 

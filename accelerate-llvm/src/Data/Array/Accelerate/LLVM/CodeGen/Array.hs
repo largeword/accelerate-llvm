@@ -1,4 +1,5 @@
 {-# LANGUAGE GADTs               #-}
+{-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications    #-}
 {-# LANGUAGE ViewPatterns        #-}
@@ -17,12 +18,15 @@ module Data.Array.Accelerate.LLVM.CodeGen.Array (
 
   readArray,
   writeArray,
+  writeArrayFused,
+  readBuffer,
 
 ) where
 
 import Control.Applicative
 import Prelude                                                      hiding ( read )
 import Data.Bits
+import Data.Typeable                                                ( (:~:)(..) )
 
 import LLVM.AST.Type.AddrSpace
 import LLVM.AST.Type.Instruction
@@ -30,12 +34,16 @@ import LLVM.AST.Type.Instruction.Volatile
 import LLVM.AST.Type.Operand
 import LLVM.AST.Type.Representation
 
+import Data.Array.Accelerate.AST.Environment
+import Data.Array.Accelerate.AST.Var
+import Data.Array.Accelerate.AST.Partitioned
 import Data.Array.Accelerate.Representation.Array
 import Data.Array.Accelerate.Representation.Type
+import Data.Array.Accelerate.Error
 
+import Data.Array.Accelerate.LLVM.CodeGen.Environment
 import Data.Array.Accelerate.LLVM.CodeGen.IR
 import Data.Array.Accelerate.LLVM.CodeGen.Monad
-import Data.Array.Accelerate.LLVM.CodeGen.Ptr
 import Data.Array.Accelerate.LLVM.CodeGen.Sugar
 import Data.Array.Accelerate.LLVM.CodeGen.Constant
 
@@ -44,83 +52,101 @@ import Data.Array.Accelerate.LLVM.CodeGen.Constant
 --
 {-# INLINEABLE readArray #-}
 readArray
-    :: IntegralType int
-    -> IRArray (Array sh e)
+    :: forall int genv m sh e arch.
+       IntegralType int
+    -> Gamma genv
+    -> Arg genv (m sh e) -- m is In or Mut
     -> Operands int
     -> CodeGen arch (Operands e)
-readArray int (IRArray (ArrayR _ tp) _ adata addrspace volatility) (op int -> ix) =
-  readArrayData addrspace volatility int ix tp adata
-
-readArrayData
-    :: AddrSpace
-    -> Volatility
-    -> IntegralType int
-    -> Operand int
-    -> TypeR e
-    -> Operands e
-    -> CodeGen arch (Operands e)
-readArrayData a v i ix = read
+readArray int env (ArgArray _ (ArrayR _ tp) _ buffers) (op int -> ix) = read tp buffers
   where
-    read :: TypeR e -> Operands e -> CodeGen arch (Operands e)
-    read TupRunit          OP_Unit                = return OP_Unit
-    read (TupRpair t2 t1) (OP_Pair a2 a1)         = OP_Pair <$> read t2 a2 <*> read t1 a1
-    read (TupRsingle e)   (asPtr a . op e -> arr) = ir e    <$> readArrayPrim a v e i arr ix
+    read :: forall t. TypeR t -> GroundVars genv (Buffers t) -> CodeGen arch (Operands t)
+    read TupRunit         _                = return OP_Unit
+    read (TupRpair t1 t2) (TupRpair b1 b2) = OP_Pair <$> read t1 b1 <*> read t2 b2
+    read (TupRsingle t)   (TupRsingle buffer)
+      | Refl <- reprIsSingle @ScalarType @t @Buffer t
+      , irbuffer <- aprjBuffer buffer env
+      = ir t <$> readBuffer t int irbuffer ix
+    read _ _ = internalError "Tuple mismatch"
 
-readArrayPrim
-    :: AddrSpace
-    -> Volatility
-    -> ScalarType e
+readBuffer
+    :: ScalarType e
     -> IntegralType int
-    -> Operand (Ptr e)
+    -> IRBuffer e
     -> Operand int
     -> CodeGen arch (Operand e)
-readArrayPrim a v e i arr ix = do
-  p <- getElementPtr a e i arr ix
+readBuffer _ _ (IRBuffer _ (Just value))          _  = return value
+readBuffer e i (IRBuffer (Just (buffer, a, v)) _) ix = do
+  p <- getElementPtr a e i buffer ix
   x <- load a e v p
   return x
+readBuffer _ _ _ _ = internalError "Illegal cluster. Attempting to read from a fused away buffer, which hasn't been written to."
 
 
 -- | Write a value into an array at the given index
 --
 {-# INLINEABLE writeArray #-}
 writeArray
-    :: IntegralType int
-    -> IRArray (Array sh e)
+    :: forall int genv m sh e arch.
+       IntegralType int
+    -> Gamma genv
+    -> Arg genv (m sh e) -- m is Out or Mut
     -> Operands int
     -> Operands e
     -> CodeGen arch ()
-writeArray int (IRArray (ArrayR _ tp) _ adata addrspace volatility) (op int -> ix) val =
-  writeArrayData addrspace volatility int ix tp adata val
-
-writeArrayData
-    :: AddrSpace
-    -> Volatility
-    -> IntegralType int
-    -> Operand int
-    -> TypeR e
-    -> Operands e
-    -> Operands e
-    -> CodeGen arch ()
-writeArrayData a v i ix = write
+writeArray int env (ArgArray _ (ArrayR _ tp) _ buffers) (op int -> ix) val = write tp buffers val
   where
-    write :: TypeR e -> Operands e -> Operands e -> CodeGen arch ()
-    write TupRunit          OP_Unit                 OP_Unit        = return ()
-    write (TupRpair t2 t1) (OP_Pair a2 a1)         (OP_Pair v2 v1) = write t1 a1 v1 >> write t2 a2 v2
-    write (TupRsingle e)   (asPtr a . op e -> arr) (op e -> val)   = writeArrayPrim a v e i arr ix val
+    write :: forall t. TypeR t -> GroundVars genv (Buffers t) -> Operands t -> CodeGen arch ()
+    write TupRunit _ _ = return ()
+    write (TupRpair t1 t2) (TupRpair b1 b2)    (OP_Pair v1 v2) = write t1 b1 v1 >> write t2 b2 v2
+    write (TupRsingle t)   (TupRsingle buffer) (op t -> value)
+      | Refl <- reprIsSingle @ScalarType @t @Buffer t
+      , irbuffer <- aprjBuffer buffer env
+      = writeBuffer t int irbuffer ix value
+    write _ _ _ = internalError "Tuple mismatch"
 
-writeArrayPrim
-    :: AddrSpace
-    -> Volatility
-    -> ScalarType e
+-- | Variant of 'writeArray' which handles *possibly* fused writes. Those are
+-- handled by storing the local variable containing their value in the
+-- environment. This function returns a new environment containing those
+-- variables.
+--
+writeArrayFused
+    :: forall int genv m sh e arch.
+       IntegralType int
+    -> Gamma genv
+    -> Arg genv (m sh e) -- m is Out or Mut
+    -> Operands int
+    -> Operands e
+    -> CodeGen arch (Gamma genv)
+writeArrayFused int environment (ArgArray _ (ArrayR _ tp) _ buffers) (op int -> ix) val = write environment tp buffers val
+  where
+    write :: forall t. Gamma genv -> TypeR t -> GroundVars genv (Buffers t) -> Operands t -> CodeGen arch (Gamma genv)
+    write env TupRunit _ _ = return env
+    write env (TupRpair t1 t2) (TupRpair b1 b2)    (OP_Pair v1 v2) = do
+      env1 <- write env t1 b1 v1
+      write env1 t2 b2 v2
+    write env (TupRsingle t)   (TupRsingle buffer) (op t -> value)
+      | Refl <- reprIsSingle @ScalarType @t @Buffer t
+      , (env', irbuffer) <- prjUpdate' (updateBuffer value) (varIdx buffer) env
+      = env' <$ writeBuffer t int irbuffer ix value
+    write _ _ _ _ = internalError "Tuple mismatch"
+
+    updateBuffer :: Operand t -> GroundOperand (Buffer t) -> (GroundOperand (Buffer t), IRBuffer t)
+    updateBuffer value (GroundOperandBuffer b@(IRBuffer manifest _)) = (GroundOperandBuffer $ IRBuffer manifest (Just value), b)
+    updateBuffer _     (GroundOperandParam _) = internalError "Scalar impossible"
+
+writeBuffer
+    :: ScalarType e
     -> IntegralType int
-    -> Operand (Ptr e)
+    -> IRBuffer e
     -> Operand int
     -> Operand e
     -> CodeGen arch ()
-writeArrayPrim a v e i arr ix x = do
-  p <- getElementPtr a e i arr ix
+writeBuffer e i (IRBuffer (Just (buffer, a, v)) _) ix x = do
+  p <- getElementPtr a e i buffer ix
   _ <- store a v e p x
   return ()
+writeBuffer _ _ _ _ _ = return () -- Buffer is fused away
 
 
 -- | A wrapper around the GetElementPtr instruction, which correctly

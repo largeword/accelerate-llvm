@@ -21,6 +21,7 @@ module Data.Array.Accelerate.LLVM.CodeGen.Stencil
   where
 
 import Data.Array.Accelerate.Error
+import Data.Array.Accelerate.AST.Partitioned                        ( Arg(..), In )
 import Data.Array.Accelerate.Representation.Array
 import Data.Array.Accelerate.Representation.Shape
 import Data.Array.Accelerate.Representation.Stencil
@@ -29,6 +30,8 @@ import Data.Array.Accelerate.Type
 
 import Data.Array.Accelerate.LLVM.CodeGen.Arithmetic                ( ifThenElse )
 import Data.Array.Accelerate.LLVM.CodeGen.Constant
+import Data.Array.Accelerate.LLVM.CodeGen.Environment
+import Data.Array.Accelerate.LLVM.CodeGen.Exp
 import Data.Array.Accelerate.LLVM.CodeGen.IR
 import Data.Array.Accelerate.LLVM.CodeGen.Monad
 import Data.Array.Accelerate.LLVM.CodeGen.Sugar
@@ -41,35 +44,36 @@ import Prelude
 
 -- Stencil boundary conditions
 --
-data IRBoundary arch aenv t where
-  IRClamp     :: IRBoundary arch aenv t
-  IRMirror    :: IRBoundary arch aenv t
-  IRWrap      :: IRBoundary arch aenv t
-  IRConstant  :: Operands e -> IRBoundary arch aenv (Array sh e)
-  IRFunction  :: IRFun1 arch aenv (sh -> e) -> IRBoundary arch aenv (Array sh e)
+data IRBoundary arch genv t where
+  IRClamp     :: IRBoundary arch genv t
+  IRMirror    :: IRBoundary arch genv t
+  IRWrap      :: IRBoundary arch genv t
+  IRConstant  :: Operands e -> IRBoundary arch genv (Array sh e)
+  IRFunction  :: IRFun1 arch genv (sh -> e) -> IRBoundary arch genv (Array sh e)
 
 
 -- Generate the stencil pattern including boundary conditions
 --
 stencilAccess
     :: HasCallStack
-    => StencilR sh e stencil
-    -> Maybe (IRBoundary arch aenv (Array sh e))
-    ->        IRDelayed  arch aenv (Array sh e)
+    => Gamma genv
+    -> StencilR sh e stencil
+    -> Maybe (IRBoundary arch genv (Array sh e))
+    -> Arg genv (In sh e)
     -> Operands sh
-    -> IRExp arch aenv stencil
-stencilAccess sR mbndy arr =
+    -> IRExp arch genv stencil
+stencilAccess env sR mbndy arr =
   case mbndy of
-    Nothing   -> goR sR (inbounds     arr)
-    Just bndy -> goR sR (bounded bndy arr)
+    Nothing   -> goR sR (inbounds env      arr)
+    Just bndy -> goR sR (bounded  env bndy arr)
   where
     -- Base cases, nothing interesting to do here since we know the lower
     -- dimension is Z.
     --
     goR :: StencilR sh e stencil
-        -> (Operands sh -> IRExp arch aenv e)
+        -> (Operands sh -> IRExp arch genv e)
         -> Operands sh
-        -> IRExp arch aenv stencil
+        -> IRExp arch genv stencil
     goR (StencilRunit3 _) rf ix
       = let (z, i) = unindex ix
             rf' d  = do d' <- A.add numType i (int d)
@@ -183,38 +187,37 @@ stencilAccess sR mbndy arr =
 -- Do not apply any boundary conditions to the given index
 --
 inbounds
-    :: IRDelayed arch aenv (Array sh e)
+    :: Gamma genv
+    -> Arg genv (In sh e)
     -> Operands sh
-    -> IRExp arch aenv e
-inbounds IRDelayed{..} ix =
-  app1 delayedIndex ix
+    -> IRExp arch genv e
+inbounds = readArrayIndex
+  
 
 
 -- Apply boundary conditions to the given index
 --
 bounded
-    :: forall sh e arch aenv. HasCallStack
-    => IRBoundary arch aenv (Array sh e)
-    -> IRDelayed  arch aenv (Array sh e)
+    :: forall sh e arch genv. HasCallStack
+    => Gamma genv
+    -> IRBoundary arch genv (Array sh e)
+    -> Arg genv (In sh e)
     -> Operands sh
-    -> IRExp arch aenv e
-bounded bndy IRDelayed{..} ix = do
-  let
-    tp :: TypeR e -- GHC 8.4 needs this type annotation
-    ArrayR shr tp = delayedRepr
-  sh <- delayedExtent
+    -> IRExp arch genv e
+bounded env bndy array@(ArgArray _ (ArrayR shr tp) _ _) ix = do
+  let sh = arraySize array env
   case bndy of
     IRConstant v ->
       if ( tp, inside shr sh ix )
-        then app1 delayedIndex ix
+        then readArrayIndex env array ix
         else return v
     IRFunction f ->
       if ( tp, inside shr sh ix )
-        then app1 delayedIndex ix
+        then readArrayIndex env array ix
         else app1 f ix
     _            -> do
       ix' <- bound shr sh ix
-      v   <- app1 delayedIndex ix'
+      v   <- readArrayIndex env array ix'
       return v
   --
   where

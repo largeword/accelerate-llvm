@@ -16,18 +16,12 @@ module Data.Array.Accelerate.LLVM.Foreign
 import Data.Array.Accelerate.Sugar.Foreign                          as A
 
 import Data.Array.Accelerate.LLVM.CodeGen.Sugar
-import Data.Array.Accelerate.LLVM.Execute.Async
 
 
 -- | Interface for backends to provide foreign function implementations for
 -- array and scalar expressions.
 --
-class Foreign arch where
-  foreignAcc :: A.Foreign asm
-             => asm (a -> b)
-             -> Maybe (a -> Par arch (FutureR arch b))
-  foreignAcc _ = Nothing
-
+class ForeignExp arch where
   foreignExp :: A.Foreign asm
              => asm (x -> y)
              -> Maybe (IRFun1 arch () (x -> y))

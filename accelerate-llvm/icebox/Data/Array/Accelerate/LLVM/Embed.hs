@@ -39,7 +39,6 @@ import Data.Array.Accelerate.Type
 
 import Data.Array.Accelerate.LLVM.AST
 import Data.Array.Accelerate.LLVM.CodeGen.Environment
-import Data.Array.Accelerate.LLVM.Compile
 import Data.Array.Accelerate.LLVM.Link
 
 import Data.ByteString.Short                                        ( ShortByteString )

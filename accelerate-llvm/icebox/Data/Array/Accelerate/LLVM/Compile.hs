@@ -41,7 +41,6 @@ import Data.Array.Accelerate.Representation.Shape
 import Data.Array.Accelerate.Representation.Stencil
 import Data.Array.Accelerate.Representation.Tag
 import Data.Array.Accelerate.Representation.Type
-import Data.Array.Accelerate.Trafo.Delayed
 import Data.Array.Accelerate.Trafo.Substitution
 import Data.Array.Accelerate.Type
 import qualified Data.Array.Accelerate.Sugar.Foreign                as A
