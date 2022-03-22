@@ -57,3 +57,26 @@ instance SLVOperation NativeOp where
   slvOperation NMap         = defaultSlvMap         NMap
   slvOperation NBackpermute = defaultSlvBackpermute NBackpermute
   slvOperation _ = Nothing
+
+
+-- No fusion at all
+noFusion :: Set Label -> Label -> Information NativeOp
+noFusion inputs l = 
+  mempty{_graphI = 
+    mempty{_infusibleEdges = 
+      Set.map (-?> l) inputs}}
+  
+
+instance MakesILP NativeOp where
+  type BackendVar NativeOp = ()
+  type BackendArg NativeOp = ()
+  data BackendClusterArg NativeOp a = None
+  
+  mkGraph NMap (_ :>: L _ (_, lIns) :>: _ :>: ArgsNil) = noFusion lIns
+  mkGraph NBackpermute (_ :>: L _ (_, lIns) :>: _ :>: ArgsNil) = noFusion lIns
+  mkGraph NGenerate _ = const mempty
+  mkGraph NPermute (_ :>: _ :>: _ :>: L _ (_, lIns) :>: ArgsNil) = noFusion lIns
+
+  labelLabelledArg _ _ (L x y) = LOp x y ()
+  getClusterArg () = None
+  finalize = const mempty
