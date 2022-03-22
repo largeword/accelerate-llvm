@@ -61,7 +61,7 @@ import GHC.TypeNats
 
 {-# INLINEABLE llvmOfFun1 #-}
 llvmOfFun1
-    :: (HasCallStack, ForeignExp arch)
+    :: (HasCallStack, CompileForeignExp arch)
     => Fun genv (a -> b)
     -> Gamma genv
     -> IRFun1 arch genv (a -> b)
@@ -70,7 +70,7 @@ llvmOfFun1  _                    _    = internalError "impossible evaluation"
 
 {-# INLINEABLE llvmOfFun2 #-}
 llvmOfFun2
-    :: (HasCallStack, ForeignExp arch)
+    :: (HasCallStack, CompileForeignExp arch)
     => Fun genv (a -> b -> c)
     -> Gamma genv
     -> IRFun2 arch genv (a -> b -> c)
@@ -84,7 +84,7 @@ llvmOfFun2 _                                 _    = internalError "impossible ev
 --
 {-# INLINEABLE llvmOfOpenExp #-}
 llvmOfOpenExp
-    :: forall arch env genv _t. (HasCallStack, ForeignExp arch)
+    :: forall arch env genv _t. (HasCallStack, CompileForeignExp arch)
     => OpenExp env genv _t
     -> Val env
     -> Gamma genv

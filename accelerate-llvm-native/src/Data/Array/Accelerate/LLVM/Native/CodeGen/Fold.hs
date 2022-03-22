@@ -41,7 +41,7 @@ import Data.Array.Accelerate.LLVM.Native.Target                     ( Native )
 import Control.Applicative
 import Prelude                                                      as P hiding ( length )
 
-
+{-
 -- Reduce an array along the innermost dimension. The reduction
 -- function must be associative to allow for an efficient parallel
 -- implementation. When an initial value is given, the input can be
@@ -273,4 +273,4 @@ reduce1FromTo eR m n f get = do
   z  <- get m
   m1 <- add numType m (ir numType (num numType 1))
   reduceFromTo eR m1 n f z get
-
+-}

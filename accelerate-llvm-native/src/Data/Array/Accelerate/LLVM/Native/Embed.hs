@@ -16,17 +16,12 @@
 
 module Data.Array.Accelerate.LLVM.Native.Embed (
 
-  module Data.Array.Accelerate.LLVM.Embed,
-
 ) where
 
 import Data.ByteString.Short.Char8                                  as S8
 import Data.ByteString.Short.Extra                                  as BS
 
 import Data.Array.Accelerate.Lifetime
-
-import Data.Array.Accelerate.LLVM.Compile
-import Data.Array.Accelerate.LLVM.Embed
 
 import Data.Array.Accelerate.LLVM.Native.Compile
 import Data.Array.Accelerate.LLVM.Native.Compile.Cache
@@ -47,7 +42,7 @@ import qualified Language.Haskell.TH.Syntax                         as TH
 import Data.Maybe
 import qualified Data.Set                                           as Set
 
-
+{-
 instance Embed Native where
   embedForTarget = embed
 
@@ -98,4 +93,4 @@ embed target (ObjectR uid nms !_ _) =
            TH.putQ (Set.insert this rest)
 #endif
       return this
-
+-}

@@ -24,8 +24,6 @@ module Data.Array.Accelerate.LLVM.Native.Foreign (
   LLVM,
   Native(..),
   liftIO,
-  module Data.Array.Accelerate.LLVM.Native.Array.Data,
-  module Data.Array.Accelerate.LLVM.Native.Execute.Async,
 
 ) where
 
@@ -35,19 +33,17 @@ import Data.Array.Accelerate.LLVM.State
 import Data.Array.Accelerate.LLVM.CodeGen.Sugar
 
 import Data.Array.Accelerate.LLVM.Foreign
-import Data.Array.Accelerate.LLVM.Native.Array.Data
-import Data.Array.Accelerate.LLVM.Native.Execute.Async
 import Data.Array.Accelerate.LLVM.Native.Target
 
 import Control.Monad.State
 import Data.Typeable
 
 
-instance Foreign Native where
-  foreignAcc (ff :: asm (a -> b))
+instance CompileForeignExp Native where
+  {- foreignAcc (ff :: asm (a -> b))
     | Just Refl        <- eqT @asm @ForeignAcc
     , ForeignAcc _ asm <- ff = Just asm
-    | otherwise              = Nothing
+    | otherwise              = Nothing -}
 
   foreignExp (ff :: asm (x -> y))
     | Just Refl        <- eqT @asm @ForeignExp
@@ -67,7 +63,8 @@ instance S.Foreign ForeignExp where
 --
 data ForeignAcc f where
   ForeignAcc :: String
-             -> (a -> Par Native (Future b))
+             -- TODO: Fix this type
+             -> (a -> b) -- -> (a -> Par Native (Future b))
              -> ForeignAcc (a -> b)
 
 -- Foreign expressions in the Native backend.

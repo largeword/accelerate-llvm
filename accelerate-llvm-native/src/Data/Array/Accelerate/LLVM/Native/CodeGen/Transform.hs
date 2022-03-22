@@ -30,6 +30,7 @@ import Data.Array.Accelerate.LLVM.Native.Target                     ( Native )
 import Data.Array.Accelerate.LLVM.Native.CodeGen.Base
 import Data.Array.Accelerate.LLVM.Native.CodeGen.Loop
 
+{-
 
 -- Hybrid map/backpermute operation
 --
@@ -59,3 +60,4 @@ mkTransform uid aenv reprIn reprOut p f =
       b   <- app1 f a
       writeArray TypeInt arrOut i' b
 
+-}

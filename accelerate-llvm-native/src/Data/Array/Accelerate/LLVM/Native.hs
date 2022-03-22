@@ -30,7 +30,7 @@
 --
 
 module Data.Array.Accelerate.LLVM.Native (
-
+{-
   Acc, Arrays,
   Afunction, AfunctionR,
 
@@ -55,9 +55,9 @@ module Data.Array.Accelerate.LLVM.Native (
   -- * Execution targets
   Native,
   createTarget,
-
+-}
 ) where
-
+{-
 import Data.Array.Accelerate.AST                                    ( PreOpenAfun(..), arraysR, liftALeftHandSide )
 import Data.Array.Accelerate.AST.LeftHandSide
 import Data.Array.Accelerate.Async                                  ( Async, async, wait, poll, cancel )
@@ -438,3 +438,4 @@ runQ' using target f = do
 dumpStats :: MonadIO m => a -> m a
 dumpStats x = liftIO dumpSimplStats >> return x
 
+-}

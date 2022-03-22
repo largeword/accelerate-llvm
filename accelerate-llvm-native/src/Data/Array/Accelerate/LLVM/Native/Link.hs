@@ -14,16 +14,13 @@
 
 module Data.Array.Accelerate.LLVM.Native.Link (
 
-  module Data.Array.Accelerate.LLVM.Link,
   module Data.Array.Accelerate.LLVM.Native.Link,
-  ExecutableR(..), FunctionTable(..), Function, ObjectCode,
+  {-ExecutableR(..),-} FunctionTable(..), Function, ObjectCode,
 
 ) where
 
 import Data.Array.Accelerate.Lifetime
 
-import Data.Array.Accelerate.LLVM.Compile
-import Data.Array.Accelerate.LLVM.Link
 import Data.Array.Accelerate.LLVM.State
 
 import Data.Array.Accelerate.LLVM.Native.Target
@@ -36,7 +33,7 @@ import Data.Array.Accelerate.LLVM.Native.Link.Runtime
 import Control.Monad.State
 import Prelude                                                      hiding ( lookup )
 
-
+{-
 instance Link Native where
   data ExecutableR Native = NativeR { nativeExecutable :: {-# UNPACK #-} !(Lifetime FunctionTable)
                                     }
@@ -60,4 +57,4 @@ withExecutable NativeR{..} f = do
   r <- f (unsafeGetValue nativeExecutable)
   liftIO $ touchLifetime nativeExecutable
   return r
-
+-}

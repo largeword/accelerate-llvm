@@ -23,11 +23,11 @@
 
 module Data.Array.Accelerate.LLVM.Native.Execute (
 
-  executeAcc,
-  executeOpenAcc
+  -- executeAcc,
+  -- executeOpenAcc
 
 ) where
-
+{-
 import Data.Array.Accelerate.Analysis.Match
 import Data.Array.Accelerate.Array.Unique
 import Data.Array.Accelerate.Error
@@ -1015,4 +1015,4 @@ sched fmt =
     Debug.when Debug.dump_sched $ do
       tid <- myThreadId
       Debug.putTraceMsg ("sched: Thread " % int % " " % builder) (getThreadId tid) k
-
+-}

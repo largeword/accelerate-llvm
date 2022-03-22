@@ -16,7 +16,6 @@ module Data.Array.Accelerate.LLVM.Native.CodeGen (
 ) where
 
 -- accelerate
-import Data.Array.Accelerate.LLVM.CodeGen
 
 import Data.Array.Accelerate.LLVM.Native.CodeGen.Base
 import Data.Array.Accelerate.LLVM.Native.CodeGen.Fold
@@ -29,7 +28,7 @@ import Data.Array.Accelerate.LLVM.Native.CodeGen.Stencil
 import Data.Array.Accelerate.LLVM.Native.CodeGen.Transform
 import Data.Array.Accelerate.LLVM.Native.Target
 
-
+{-
 instance Skeleton Native where
   map         = mkMap
   generate    = mkGenerate
@@ -41,4 +40,4 @@ instance Skeleton Native where
   permute     = mkPermute
   stencil1    = mkStencil1
   stencil2    = mkStencil2
-
+-}

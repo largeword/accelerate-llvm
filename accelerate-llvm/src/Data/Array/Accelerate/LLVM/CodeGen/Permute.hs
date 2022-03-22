@@ -84,7 +84,7 @@ data IRPermuteFun arch aenv t where
 -- let-bindings.
 --
 llvmOfPermuteFun
-    :: forall arch aenv e. ForeignExp arch
+    :: forall arch aenv e. CompileForeignExp arch
     => Fun aenv (e -> e -> e)
     -> Gamma aenv
     -> IRPermuteFun arch aenv (e -> e -> e)

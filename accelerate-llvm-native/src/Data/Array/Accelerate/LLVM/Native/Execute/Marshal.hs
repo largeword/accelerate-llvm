@@ -17,23 +17,19 @@
 -- Portability : non-portable (GHC extensions)
 --
 
-module Data.Array.Accelerate.LLVM.Native.Execute.Marshal ( module M )
+module Data.Array.Accelerate.LLVM.Native.Execute.Marshal
   where
 
 -- accelerate
-import Data.Array.Accelerate.LLVM.Execute.Marshal               as M
 import Data.Array.Accelerate.Array.Unique
-
-import Data.Array.Accelerate.LLVM.Native.Execute.Async          () -- instance Async Native
-import Data.Array.Accelerate.LLVM.Native.Target
+import Data.Array.Accelerate.Array.Buffer
 
 -- libraries
-import qualified Data.DList                                     as DL
 import qualified Foreign.LibFFI                                 as FFI
 
-instance Marshal Native where
-  type ArgR Native = FFI.Arg
+marshalInt :: Int -> FFI.Arg
+marshalInt = FFI.argInt
 
-  marshalInt = FFI.argInt
-  marshalScalarData' _ = return . DL.singleton . FFI.argPtr . unsafeUniqueArrayPtr
+marshalBuffer :: Buffer t -> FFI.Arg
+marshalBuffer (Buffer ua) = FFI.argPtr $ unsafeUniqueArrayPtr ua
 

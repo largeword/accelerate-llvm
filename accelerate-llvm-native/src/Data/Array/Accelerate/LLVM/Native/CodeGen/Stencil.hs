@@ -15,8 +15,8 @@
 
 module Data.Array.Accelerate.LLVM.Native.CodeGen.Stencil (
 
-  mkStencil1,
-  mkStencil2,
+  -- mkStencil1,
+  -- mkStencil2,
 
 ) where
 
@@ -46,6 +46,7 @@ import qualified LLVM.AST.Global                                    as LLVM
 
 import Control.Monad
 
+{-
 
 -- The stencil function is similar to a map, but has access to surrounding
 -- elements as specified by the stencil pattern.
@@ -212,3 +213,5 @@ imapFromStepTo start step end body =
         (\i -> body i >> incr i)
         start
 
+
+-}

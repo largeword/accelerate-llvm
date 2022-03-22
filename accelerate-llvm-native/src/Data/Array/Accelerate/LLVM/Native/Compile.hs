@@ -14,17 +14,11 @@
 --
 
 module Data.Array.Accelerate.LLVM.Native.Compile (
-
-  module Data.Array.Accelerate.LLVM.Compile,
   ObjectR(..),
-
 ) where
 
 import Data.Array.Accelerate.AST                                    ( PreOpenAcc )
-import Data.Array.Accelerate.Trafo.Delayed
 
-import Data.Array.Accelerate.LLVM.CodeGen
-import Data.Array.Accelerate.LLVM.Compile
 import Data.Array.Accelerate.LLVM.State
 import Data.Array.Accelerate.LLVM.CodeGen.Environment               ( Gamma )
 import Data.Array.Accelerate.LLVM.CodeGen.Module                    ( Module(..) )
@@ -57,18 +51,14 @@ import qualified Data.ByteString.Short                              as BS
 import qualified Data.HashMap.Strict                                as HashMap
 
 
-instance Compile Native where
-  data ObjectR Native = ObjectR
-    { objId         :: {-# UNPACK #-} !UID
-    , objSyms       :: ![ShortByteString]
-    , staticObjPath :: {- LAZY -} FilePath
-    , sharedObjPath :: {- LAZY -} FilePath
-    }
-  compileForTarget    = compile
+data ObjectR = ObjectR
+  { objId         :: {-# UNPACK #-} !UID
+  , objSyms       :: ![ShortByteString]
+  , staticObjPath :: {- LAZY -} FilePath
+  , sharedObjPath :: {- LAZY -} FilePath
+  }
 
-instance Intrinsic Native
-
-
+{-
 -- | Compile an Accelerate expression to object code.
 --
 -- This compilation step creates a static object file and a shared object
@@ -166,7 +156,7 @@ compile pacc aenv = do
     return sharedObjFile
 
   return $! ObjectR uid nms o_file so_file
-
+-}
 
 -- Respect the common @LD@ and @CC@ environment variables, falling back to
 -- search the path for @cc@ if neither of those exist.

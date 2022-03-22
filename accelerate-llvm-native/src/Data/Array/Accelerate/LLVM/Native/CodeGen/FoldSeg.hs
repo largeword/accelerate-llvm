@@ -91,7 +91,7 @@ mkFoldSegS uid aenv combine mseed marr mseg =
     return_
 --}
 
-
+{-
 -- Segmented reduction along the innermost dimension of an array. Performs one
 -- reduction per segment of the source array. When no seed is given, assumes
 -- that /all/ segments are non-empty.
@@ -139,4 +139,4 @@ mkFoldSeg uid aenv aR@(ArrayR shR eR) int combine mseed marr mseg =
              Nothing   ->    reduce1FromTo eR u v (app2 combine)   (app1 (delayedIndex arrIn) . indexCons iz)
 
       writeArray TypeInt arrOut ii r
-
+-}

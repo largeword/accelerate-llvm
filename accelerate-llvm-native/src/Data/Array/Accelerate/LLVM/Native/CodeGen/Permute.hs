@@ -32,7 +32,6 @@ import Data.Array.Accelerate.LLVM.CodeGen.Exp
 import Data.Array.Accelerate.LLVM.CodeGen.IR
 import Data.Array.Accelerate.LLVM.CodeGen.Monad
 import Data.Array.Accelerate.LLVM.CodeGen.Permute
-import Data.Array.Accelerate.LLVM.CodeGen.Ptr
 import Data.Array.Accelerate.LLVM.CodeGen.Sugar
 import Data.Array.Accelerate.LLVM.Compile.Cache
 
@@ -51,7 +50,7 @@ import Control.Applicative
 import Control.Monad                                                ( void )
 import Prelude
 
-
+{-
 -- Forward permutation specified by an indexing mapping. The resulting array is
 -- initialised with the given defaults, and any further values that are permuted
 -- into the result array are added to the current value using the combination
@@ -303,4 +302,4 @@ reprOut (ArrayR _ tp) shr = ArrayR shr tp
 
 reprLock :: ArrayR (Array ((), Int) Word8)
 reprLock = ArrayR (ShapeRsnoc ShapeRz) $ TupRsingle scalarTypeWord8
-
+-}

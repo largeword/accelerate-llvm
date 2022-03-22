@@ -78,6 +78,7 @@ import Data.Array.Accelerate.LLVM.Native.CodeGen.Loop
 -- The map operation can always treat an array of any dimension in its flat
 -- underlying representation, which simplifies code generation.
 --
+{-
 mkMap :: UID
       -> Gamma aenv
       -> ArrayR (Array sh a)
@@ -97,4 +98,4 @@ mkMap uid aenv (ArrayR shR aR) bR apply =
       xs <- readArray TypeInt arrIn i
       ys <- app1 apply xs
       writeArray TypeInt arrOut i ys
-
+-}

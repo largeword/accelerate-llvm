@@ -46,7 +46,7 @@ import Data.String                                                  ( fromString
 import Data.Coerce                                                  as Safe
 import Prelude                                                      as P
 
-
+{-
 -- 'Data.List.scanl' or 'Data.List.scanl1' style exclusive scan,
 -- but with the restriction that the combination function must be associative
 -- to enable efficient parallel implementation.
@@ -695,4 +695,4 @@ mkScan'P3 dir uid aenv eR combine =
                LeftToRight -> app2 combine c x
                RightToLeft -> app2 combine x c
         writeArray TypeInt arrOut i y
-
+-}

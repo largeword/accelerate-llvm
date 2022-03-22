@@ -30,7 +30,6 @@ import Data.Array.Accelerate.Type
 
 import Data.Array.Accelerate.LLVM.State
 import Data.Array.Accelerate.LLVM.Array.Data
-import Data.Array.Accelerate.LLVM.Native.Execute.Async              ()  -- Async Native
 import Data.Array.Accelerate.LLVM.Native.Target
 
 import Control.Monad.Trans
