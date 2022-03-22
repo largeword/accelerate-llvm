@@ -76,6 +76,9 @@ Library
     Data.Array.Accelerate.LLVM.Native.Foreign
 
   other-modules:
+    Data.Array.Accelerate.LLVM.Native.Operation
+    Data.Array.Accelerate.LLVM.Native.Kernel
+
     Data.Array.Accelerate.LLVM.Native.Debug
     Data.Array.Accelerate.LLVM.Native.State
     Data.Array.Accelerate.LLVM.Native.Target

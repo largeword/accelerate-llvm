@@ -57,6 +57,10 @@ module Data.Array.Accelerate.LLVM.Native (
   createTarget,
 -}
 ) where
+
+import Data.Array.Accelerate.LLVM.Native.Operation
+import Data.Array.Accelerate.LLVM.Native.Kernel
+
 {-
 import Data.Array.Accelerate.AST                                    ( PreOpenAfun(..), arraysR, liftALeftHandSide )
 import Data.Array.Accelerate.AST.LeftHandSide
