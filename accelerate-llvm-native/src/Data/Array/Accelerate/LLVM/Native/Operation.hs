@@ -1,6 +1,7 @@
-{-# LANGUAGE GADTs             #-}
 {-# LANGUAGE BangPatterns      #-}
+{-# LANGUAGE GADTs             #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TypeFamilies      #-}
 
 -- |
 -- Module      : Data.Array.Accelerate.LLVM.Native.Accelerate
@@ -21,6 +22,12 @@ module Data.Array.Accelerate.LLVM.Native.Operation (
 import Data.Array.Accelerate.AST.Exp
 import Data.Array.Accelerate.AST.Operation
 import Data.Array.Accelerate.Backend
+import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph
+import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels
+
+import Data.Set (Set)
+import qualified Data.Set as Set
+
 
 data NativeOp op where
   NMap         :: NativeOp (Fun' (s -> t)    -> In sh s -> Out sh  t -> ())
@@ -78,5 +85,5 @@ instance MakesILP NativeOp where
   mkGraph NPermute (_ :>: _ :>: _ :>: L _ (_, lIns) :>: ArgsNil) = noFusion lIns
 
   labelLabelledArg _ _ (L x y) = LOp x y ()
-  getClusterArg () = None
+  getClusterArg _ = None
   finalize = const mempty
