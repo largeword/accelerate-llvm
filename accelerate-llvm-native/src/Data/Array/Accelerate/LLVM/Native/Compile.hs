@@ -21,7 +21,6 @@ import Data.Array.Accelerate.AST                                    ( PreOpenAcc
 
 import Data.Array.Accelerate.LLVM.State
 import Data.Array.Accelerate.LLVM.CodeGen.Environment               ( Gamma )
-import Data.Array.Accelerate.LLVM.CodeGen.Module                    ( Module(..) )
 
 import Data.Array.Accelerate.LLVM.Native.CodeGen                    ( )
 import Data.Array.Accelerate.LLVM.Native.Compile.Cache
@@ -32,6 +31,7 @@ import qualified Data.Array.Accelerate.LLVM.Native.Debug            as Debug
 
 import LLVM.AST                                                     hiding ( Module )
 import LLVM.Module                                                  as LLVM hiding ( Module )
+import LLVM.AST.Type.Module                                         ( Module(..) )
 import LLVM.Context
 import LLVM.Target
 

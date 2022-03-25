@@ -17,7 +17,6 @@ module Data.Array.Accelerate.LLVM.CodeGen.Sugar (
 
   IRExp, MIRExp, IRFun1, IRFun2,
   IROpenExp, IROpenFun1(..), IROpenFun2(..),
-  IROpenAcc(..),
 
   IRBuffer(..),
 
@@ -25,12 +24,12 @@ module Data.Array.Accelerate.LLVM.CodeGen.Sugar (
 
 import LLVM.AST.Type.AddrSpace
 import LLVM.AST.Type.Instruction.Volatile
+import LLVM.AST.Type.Module
 import LLVM.AST.Type.Operand
 import Foreign.Ptr
 
 import Data.Array.Accelerate.LLVM.CodeGen.IR
-import Data.Array.Accelerate.LLVM.CodeGen.Module
-import {-# SOURCE #-} Data.Array.Accelerate.LLVM.CodeGen.Monad
+import Data.Array.Accelerate.LLVM.CodeGen.Monad
 
 
 -- Scalar expressions
@@ -57,10 +56,6 @@ data IROpenFun2 arch env aenv t where
 
 -- Arrays
 -- ------
-
-data IROpenAcc arch aenv arrs where
-  IROpenAcc :: [Kernel arch aenv arrs]
-            -> IROpenAcc arch aenv arrs
 
 data IRBuffer e
   = IRBuffer

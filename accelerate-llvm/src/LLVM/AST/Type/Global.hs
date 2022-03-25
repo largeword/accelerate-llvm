@@ -29,15 +29,18 @@ import qualified LLVM.AST.Type                                      as LLVM
 
 -- | A global function definition.
 --
-type GlobalFunction args t = Function Label args t
+type GlobalFunction t = Function Label t -- Function without implementation
+type GlobalFunctionDefinition t = Function GlobalFunctionBody t -- Function with implementation
 
-instance Downcast (GlobalFunction args t) LLVM.Global where
+data GlobalFunctionBody = GlobalFunctionBody Label [LLVM.BasicBlock]
+
+instance Downcast (GlobalFunction t) LLVM.Global where
   downcast f = LLVM.functionDefaults { LLVM.name       = nm
                                      , LLVM.returnType = res
                                      , LLVM.parameters = (params, False)
                                      }
     where
-      trav :: GlobalFunction args t -> ([LLVM.Type], LLVM.Type, LLVM.Name)
+      trav :: GlobalFunction t -> ([LLVM.Type], LLVM.Type, LLVM.Name)
       trav (Body t _ n) = ([], downcast t, downcast n)
       trav (Lam a _ l)  = let (as, r, n) = trav l
                           in  (downcast a : as, r, n)
@@ -45,3 +48,17 @@ instance Downcast (GlobalFunction args t) LLVM.Global where
       (args, res, nm)  = trav f
       params           = [ LLVM.Parameter t (LLVM.UnName i) [] | t <- args | i <- [0..] ]
 
+instance Downcast (GlobalFunctionDefinition t) LLVM.Global where
+  downcast f = LLVM.functionDefaults { LLVM.name        = nm
+                                     , LLVM.returnType  = res
+                                     , LLVM.parameters  = (params, False)
+                                     , LLVM.basicBlocks = bs
+                                     }
+    where
+      trav :: GlobalFunctionDefinition t -> ([LLVM.Parameter], LLVM.Type, LLVM.Name, [LLVM.BasicBlock])
+      trav (Body t _ (GlobalFunctionBody n blocks)) = ([], downcast t, downcast n, blocks)
+      trav (Lam t p l)
+        = (LLVM.Parameter (downcast t) (downcast p) [] : ps, r, n, blocks)
+        where (ps, r, n, blocks) = trav l
+      --
+      (params, res, nm, bs)  = trav f

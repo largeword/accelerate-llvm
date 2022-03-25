@@ -26,6 +26,7 @@ import qualified LLVM.CodeGenOpt                                    as CodeOptim
 import Data.Array.Accelerate.LLVM.Native.Link.Cache                 ( LinkCache )
 import Data.Array.Accelerate.LLVM.Native.Execute.Scheduler          ( Workers )
 import Data.Array.Accelerate.LLVM.Target                            ( Target(..) )
+import Data.Array.Accelerate.LLVM.CodeGen.Intrinsic
 
 -- standard library
 import Data.ByteString                                              ( ByteString )
@@ -44,6 +45,7 @@ instance Target Native where
   targetTriple     = Just nativeTargetTriple
   targetDataLayout = Just nativeDataLayout
 
+instance Intrinsic Native
 
 -- | String that describes the native target
 --

@@ -45,8 +45,11 @@ import Control.Monad
 import Data.Char
 
 
-call' :: GlobalFunction args t -> CodeGen arch (Operands t)
-call' f = call f [NoUnwind, NoDuplicate]
+call' :: GlobalFunction t -> Arguments t -> CodeGen arch (Operands (Result t))
+call' f args = call f args [NoUnwind, NoDuplicate]
+
+lam :: IsPrim a => GlobalFunction t -> GlobalFunction (a -> t)
+lam = lamUnnamed primType
 
 global_string :: String -> CodeGen arch (Name (Ptr Word8), Word64)
 global_string str = do
@@ -135,14 +138,23 @@ alloc_srcloc_name l src fun nm
       ps   <- if null src then return $ ConstantOperand (NullPtrConstant type') else instr' (GetElementPtr source   [num numType 0, num numType 0 :: Operand Int32])
       pf   <- if null fun then return $ ConstantOperand (NullPtrConstant type') else instr' (GetElementPtr function [num numType 0, num numType 0 :: Operand Int32])
       pn   <- if null nm  then return $ ConstantOperand (NullPtrConstant type') else instr' (GetElementPtr name     [num numType 0, num numType 0 :: Operand Int32])
-      call' $ Lam primType line
-            $ Lam primType ps
-            $ Lam primType sourceSz
-            $ Lam primType pf
-            $ Lam primType functionSz
-            $ Lam primType pn
-            $ Lam primType nameSz
-            $ Body (type' :: Type Word64) (Just Tail) "___tracy_alloc_srcloc_name"
+      call'
+        (lam
+          $ lam
+          $ lam
+          $ lam
+          $ lam
+          $ lam
+          $ lam
+          $ Body (type' :: Type Word64) (Just Tail) "___tracy_alloc_srcloc_name")
+        (ArgumentsCons line []
+          $ ArgumentsCons ps []
+          $ ArgumentsCons sourceSz []
+          $ ArgumentsCons pf []
+          $ ArgumentsCons functionSz []
+          $ ArgumentsCons pn []
+          $ ArgumentsCons nameSz []
+            ArgumentsNil)
 
 zone_begin
     :: Int      -- line
@@ -157,9 +169,13 @@ zone_begin line src fun name colour
       srcloc <- source_location_data name fun src line colour
       let srcloc_ty = PtrPrimType (NamedPrimType "___tracy_source_location_data") defaultAddrSpace
       --
-      call' $ Lam srcloc_ty (ConstantOperand (GlobalReference (PrimType srcloc_ty) srcloc))
-            $ Lam primType (ConstantOperand (ScalarConstant scalarType (1 :: Int32)))
-            $ Body (type' :: Type Word64) (Just Tail) "___tracy_emit_zone_begin"
+      call'
+        (lamUnnamed srcloc_ty
+          $ lam
+          $ Body (type' :: Type Word64) (Just Tail) "___tracy_emit_zone_begin")
+        (ArgumentsCons (ConstantOperand (GlobalReference (PrimType srcloc_ty) srcloc)) []
+          $ ArgumentsCons (ConstantOperand (ScalarConstant scalarType (1 :: Int32))) []
+            ArgumentsNil)
 
 zone_begin_alloc
     :: Int      -- line
@@ -172,13 +188,16 @@ zone_begin_alloc line src fun name colour
   | not debuggingIsEnabled = return (constant (eltR @Zone) 0)
   | otherwise              = do
       srcloc <- alloc_srcloc_name line src fun name
-      zone   <- call' $ Lam primType (op primType srcloc)
-                      $ Lam primType (ConstantOperand (ScalarConstant scalarType (1 :: Int32)))
-                      $ Body (type' :: Type Word64) (Just Tail) "___tracy_emit_zone_begin_alloc"
-      when (colour /= 0) $
-        void . call' $ Lam primType (op primType zone)
-                     $ Lam primType (ConstantOperand (ScalarConstant scalarType colour))
-                     $ Body (type' :: Type ()) (Just Tail) "___tracy_emit_zone_color"
+      zone   <- call'
+        (lam $ lam $ Body (type' :: Type Word64) (Just Tail) "___tracy_emit_zone_begin_alloc")
+        (ArgumentsCons (op primType srcloc) []
+          $ ArgumentsCons (ConstantOperand (ScalarConstant scalarType (1 :: Int32))) []
+            ArgumentsNil)
+      when (colour /= 0) $ void $ call'
+          (lam $ lam $ Body (type' :: Type ()) (Just Tail) "___tracy_emit_zone_color")
+          (ArgumentsCons (op primType zone) []
+            $ ArgumentsCons (ConstantOperand (ScalarConstant scalarType colour)) []
+              ArgumentsNil)
       return zone
 
 zone_end
@@ -186,5 +205,7 @@ zone_end
     -> CodeGen arch ()
 zone_end zone
   | not debuggingIsEnabled = return ()
-  | otherwise              = void $ call' (Lam primType (op primType zone) (Body VoidType (Just Tail) "___tracy_emit_zone_end"))
+  | otherwise = void $ call'
+      (lam (Body VoidType (Just Tail) "___tracy_emit_zone_end"))
+      (ArgumentsCons (op primType zone) [] ArgumentsNil)
 

@@ -1,9 +1,12 @@
-{-# LANGUAGE AllowAmbiguousTypes #-}
-{-# LANGUAGE GADTs               #-}
-{-# LANGUAGE LambdaCase          #-}
-{-# LANGUAGE RankNTypes          #-}
-{-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TypeApplications    #-}
+{-# LANGUAGE AllowAmbiguousTypes  #-}
+{-# LANGUAGE GADTs                #-}
+{-# LANGUAGE LambdaCase           #-}
+{-# LANGUAGE RankNTypes           #-}
+{-# LANGUAGE ScopedTypeVariables  #-}
+{-# LANGUAGE TypeApplications     #-}
+{-# LANGUAGE TypeFamilies         #-}
+{-# LANGUAGE TypeOperators        #-}
+{-# LANGUAGE UndecidableInstances #-}
 {-# OPTIONS_HADDOCK hide #-}
 -- |
 -- Module      : Data.Array.Accelerate.LLVM.CodeGen.Base
@@ -23,16 +26,14 @@ module Data.Array.Accelerate.LLVM.CodeGen.Base (
 
   -- Functions & parameters
   call,
-  parameter, scalarParameter, ptrParameter,
-  -- envParam,
-  arrayParam,
+  bindScalars, MarshalScalars, bindWorkRange,
 
 ) where
 
 import LLVM.AST.Type.AddrSpace
 import LLVM.AST.Type.Constant
 import LLVM.AST.Type.Downcast
-import LLVM.AST.Type.Function
+import LLVM.AST.Type.Function                                       as LLVMType
 import LLVM.AST.Type.Global
 import LLVM.AST.Type.InlineAssembly
 import LLVM.AST.Type.Instruction
@@ -53,6 +54,7 @@ import qualified LLVM.AST.Global                                    as LLVM
 
 import Data.Monoid
 import Data.String
+import Data.Typeable
 import Text.Printf
 import qualified Data.IntMap                                        as IM
 import Prelude                                                      as P
@@ -147,50 +149,71 @@ travTypeToOperands tp f = snd $ go tp 0
 -- | Call a global function. The function declaration is inserted into the
 -- symbol table.
 --
-call :: GlobalFunction args t -> [FunctionAttribute] -> CodeGen arch (Operands t)
-call f attrs = do
+call :: GlobalFunction t -> Arguments t -> [FunctionAttribute] -> CodeGen arch (Operands (Result t))
+call f args attrs = do
   let decl      = (downcast f) { LLVM.functionAttributes = downcast attrs' }
       attrs'    = map Right attrs
       --
-      go :: GlobalFunction args t -> Function (Either InlineAssembly Label) args t
+      go :: GlobalFunction t -> Function (Either InlineAssembly Label) t
       go (Body t k l) = Body t k (Right l)
       go (Lam t x l)  = Lam t x (go l)
   --
   declare decl
-  instr (Call (go f) attrs')
+  instr (Call (go f) args attrs')
 
+-- | Converts a tuple of scalars to a function type
+type family MarshalScalars a res where
+  MarshalScalars (t, s) res = MarshalScalars t (MarshalScalars s res)
+  MarshalScalars ()     res = res
+  MarshalScalars t      res = t -> res
 
-parameter :: TypeR t -> Name t -> [LLVM.Parameter]
-parameter tp n = travTypeToList tp (\s i -> scalarParameter s (rename n i))
-
-scalarParameter :: ScalarType t -> Name t -> LLVM.Parameter
-scalarParameter t x = downcast (Parameter (ScalarPrimType t) x)
-
-ptrParameter :: ScalarType t -> Name (Ptr t) -> LLVM.Parameter
-ptrParameter t x = downcast (Parameter (PtrPrimType (ScalarPrimType t) defaultAddrSpace) x)
-
-
-{-
--- | Unpack the array environment into a set of input parameters to a function.
--- The environment here refers only to the actual free array variables that are
--- accessed by the function.
---
-envParam :: forall aenv. Gamma aenv -> [LLVM.Parameter]
-envParam aenv = concatMap (\(Label n, Idx' repr _) -> toParam repr (Name n)) (IM.elems aenv)
+bindScalars :: String -> TypeR t -> (Result f :~: Result (MarshalScalars t f), GlobalFunctionDefinition f -> GlobalFunctionDefinition (MarshalScalars t f), Operands t)
+bindScalars prefix tp = (eq, fun, operands)
   where
-    toParam :: ArrayR (Array sh e) -> Name (Array sh e) -> [LLVM.Parameter]
-    toParam repr name = arrayParam repr name
--}
+    (_, eq, fun, operands) = bindScalars' prefix 0 tp
 
--- | Generate function parameters for an Array with given base name.
---
-{-# INLINEABLE arrayParam #-}
-arrayParam
-    :: ArrayR (Array sh e)
-    -> Name (Array sh e)
-    -> [LLVM.Parameter]
-arrayParam (ArrayR shr tp) name = ad ++ sh
+bindScalars' :: forall t f. String -> Int -> TypeR t -> (Int, Result f :~: Result (MarshalScalars t f), GlobalFunctionDefinition f -> GlobalFunctionDefinition (MarshalScalars t f), Operands t)
+bindScalars' prefix fresh (TupRpair t1 t2)
+  | (fresh1, eq1, f1, o1) <- bindScalars' prefix fresh  t1
+  , (fresh2, eq2, f2, o2) <- bindScalars' prefix fresh1 t2
+  = (fresh2, case (eq1, eq2) of (Refl, Refl) -> Refl, f1 . f2, OP_Pair o1 o2)
+bindScalars' prefix fresh (TupRsingle tp)
+  | Refl <- marshalScalar @t @f tp = (fresh + 1, Refl, LLVMType.Lam (ScalarPrimType tp) name, ir tp operand)
   where
-    ad = travTypeToList tp              (\t i -> ptrParameter    t (arrayName name i))
-    sh = travTypeToList (shapeType shr) (\t i -> scalarParameter t (shapeName name i))
+    operand = LocalReference (PrimType $ ScalarPrimType tp) name
+    name = fromString $ prefix ++ show fresh
+bindScalars' _      fresh (TupRunit) = (fresh, Refl, id, OP_Unit)
 
+marshalScalar :: ScalarType t -> (t -> res) :~: MarshalScalars t res
+-- Pattern match to prove that 't' is not () or a pair type
+marshalScalar (VectorScalarType _) = Refl
+marshalScalar (SingleScalarType (NumSingleType (IntegralNumType tp))) = case tp of
+  TypeInt    -> Refl
+  TypeInt8   -> Refl
+  TypeInt16  -> Refl
+  TypeInt32  -> Refl
+  TypeInt64  -> Refl
+  TypeWord   -> Refl
+  TypeWord8  -> Refl
+  TypeWord16 -> Refl
+  TypeWord32 -> Refl
+  TypeWord64 -> Refl
+marshalScalar (SingleScalarType (NumSingleType (FloatingNumType tp))) = case tp of
+  TypeHalf   -> Refl
+  TypeFloat  -> Refl
+  TypeDouble -> Refl
+
+bindWorkRange
+  :: ShapeR sh
+  -> ( Result t :~: Result (MarshalScalars sh (MarshalScalars sh t))
+     , GlobalFunctionDefinition t -> GlobalFunctionDefinition (MarshalScalars sh (MarshalScalars sh t))
+     , Operands sh
+     , Operands sh
+     )
+bindWorkRange shr
+  | (eq1, funStart, opStart) <- bindScalars "ix.start." tp
+  , (eq2, funEnd,   opEnd)   <- bindScalars "ix.end." tp
+  = (case (eq1, eq2) of (Refl, Refl) -> Refl, funStart . funEnd, opStart, opEnd)
+  where
+    tp = shapeType shr
+    

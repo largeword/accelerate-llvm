@@ -10,9 +10,7 @@
 --
 
 module Data.Array.Accelerate.LLVM.Native.CodeGen (
-
-  KernelMetadata(..),
-
+  
 ) where
 
 -- accelerate

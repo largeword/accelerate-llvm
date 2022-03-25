@@ -19,7 +19,7 @@
 module Data.Array.Accelerate.LLVM.CodeGen.Monad (
 
   CodeGen,
-  evalCodeGen,
+  codeGenFunction,
   liftCodeGen,
 
   -- declarations
@@ -44,19 +44,21 @@ module Data.Array.Accelerate.LLVM.CodeGen.Monad (
 import Data.Array.Accelerate.Error
 import Data.Array.Accelerate.LLVM.CodeGen.IR
 import Data.Array.Accelerate.LLVM.CodeGen.Intrinsic
-import Data.Array.Accelerate.LLVM.CodeGen.Module
-import Data.Array.Accelerate.LLVM.CodeGen.Sugar                     ( IROpenAcc(..) )
 import Data.Array.Accelerate.LLVM.State                             ( LLVM )
 import Data.Array.Accelerate.LLVM.Target
 import Data.Array.Accelerate.Representation.Tag
 import Data.Array.Accelerate.Representation.Type
 import qualified Data.Array.Accelerate.Debug.Internal               as Debug
+import Data.Array.Accelerate.LLVM.Compile.Cache                     ( UID )
 
 import LLVM.AST.Orphans                                             ()
 import LLVM.AST.Type.Constant
 import LLVM.AST.Type.Downcast
 import LLVM.AST.Type.Instruction
 import LLVM.AST.Type.Metadata
+import LLVM.AST.Type.Module
+import LLVM.AST.Type.Function
+import LLVM.AST.Type.Global
 import LLVM.AST.Type.Name
 import LLVM.AST.Type.Operand
 import LLVM.AST.Type.Representation
@@ -110,49 +112,51 @@ newtype CodeGen target a = CodeGen { runCodeGen :: StateT CodeGenState (LLVM tar
 liftCodeGen :: LLVM arch a -> CodeGen arch a
 liftCodeGen = CodeGen . lift
 
+codeGenFunction
+  :: forall arch f. (HasCallStack, Target arch, Intrinsic arch, Result f ~ ())
+  => UID
+  -> Label
+  -> (GlobalFunctionDefinition () -> GlobalFunctionDefinition f)
+  -> CodeGen arch ()
+  -> LLVM arch (Module f)
+codeGenFunction uid name bind body = do
+  -- Execute the CodeGen monad and retrieve the code of the function and final state.
+  (code, st) <- runStateT
+    ( runCodeGen $ do
+      -- For tracy, we should emit this:
+      -- zone <- zone_begin_alloc 0 [] (S8.unpack sbs) [] 0
+      body
+      -- _    <- zone_end zone
+      return_
+      createBlocks
+    )
+    $ CodeGenState
+        { blockChain        = initBlockChain
+        , symbolTable       = HashMap.empty
+        , typedefTable      = HashMap.empty
+        , metadataTable     = HashMap.empty
+        , intrinsicTable    = intrinsicForTarget @arch
+        , local             = 0
+        , global            = 0
+        }
+  
+  let
+    fullName = name <> fromString ('_' : show uid)
+    fullName'
+      | Label s <- fullName = s
+      | otherwise = "<undefined>"
+    typeDefs = map (\(n,t) -> LLVM.TypeDefinition (downcast n) t) $ HashMap.toList $ typedefTable st
+    symbols = map LLVM.GlobalDefinition $ HashMap.elems $ symbolTable st
+    metadata = createMetadata $ metadataTable st
 
-{-# INLINEABLE evalCodeGen #-}
-evalCodeGen
-    :: forall arch aenv a. (HasCallStack, Target arch, Intrinsic arch)
-    => CodeGen arch (IROpenAcc arch aenv a)
-    -> LLVM    arch (Module    arch aenv a)
-evalCodeGen ll = do
-  (IROpenAcc ks, st)   <- runStateT (runCodeGen ll)
-                        $ CodeGenState
-                            { blockChain        = initBlockChain
-                            , symbolTable       = HashMap.empty
-                            , typedefTable      = HashMap.empty
-                            , metadataTable     = HashMap.empty
-                            , intrinsicTable    = intrinsicForTarget @arch
-                            , local             = 0
-                            , global            = 0
-                            }
-
-  let (kernels, md)     = let (fs, as) = unzip [ (f , (LLVM.name f, a)) | Kernel f a <- ks ]
-                          in  (fs, HashMap.fromList as)
-
-      createTypedefs    = map (\(n,t) -> LLVM.TypeDefinition (downcast n) t) . HashMap.toList
-
-      definitions       = createTypedefs (typedefTable st)
-                       ++ map LLVM.GlobalDefinition (kernels ++ HashMap.elems (symbolTable st))
-                       ++ createMetadata (metadataTable st)
-
-      name | x:_               <- kernels
-           , f@LLVM.Function{} <- x
-           , LLVM.Name s       <- LLVM.name f = s
-           | otherwise                        = "<undefined>"
-
-  return $
-    Module { moduleMetadata = md
-           , unModule       = LLVM.Module
-                            { LLVM.moduleName           = name
-                            , LLVM.moduleSourceFileName = B.empty
-                            , LLVM.moduleDataLayout     = targetDataLayout @arch
-                            , LLVM.moduleTargetTriple   = targetTriple @arch
-                            , LLVM.moduleDefinitions    = definitions
-                            }
-           }
-
+  return $ Module
+    { moduleName             = fullName'
+    , moduleSourceFileName   = B.empty
+    , moduleDataLayout       = targetDataLayout @arch
+    , moduleTargetTriple     = targetTriple @arch
+    , moduleMain             = bind $ Body VoidType Nothing (GlobalFunctionBody fullName code)
+    , moduleOtherDefinitions = typeDefs ++ symbols ++ metadata
+    }
 
 -- Basic Blocks
 -- ============

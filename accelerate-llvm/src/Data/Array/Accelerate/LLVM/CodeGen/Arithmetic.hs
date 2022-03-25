@@ -78,13 +78,14 @@ abs n x =
     FloatingNumType f                  -> mathf "fabs" f x
     IntegralNumType i
       | unsigned i                     -> return x
-      | IntegralDict <- integralDict i ->
+      | Refl <- integralTypeIsResult i
+      , IntegralDict <- integralDict i ->
           let p = ScalarPrimType (SingleScalarType (NumSingleType n))
               t = PrimType p
           in
           case finiteBitSize (undefined :: a) of
-            64 -> call (Lam p (op n x) (Body t Nothing "llabs")) [NoUnwind, ReadNone]
-            _  -> call (Lam p (op n x) (Body t Nothing "abs"))   [NoUnwind, ReadNone]
+            64 -> call (lamUnnamed p (Body t Nothing "llabs")) (ArgumentsCons (op n x) [] ArgumentsNil) [NoUnwind, ReadNone]
+            _  -> call (lamUnnamed p (Body t Nothing "abs"))   (ArgumentsCons (op n x) [] ArgumentsNil) [NoUnwind, ReadNone]
 
 signum :: forall arch a. NumType a -> Operands a -> CodeGen arch (Operands a)
 signum t x =
@@ -280,33 +281,42 @@ rotateR t x i = do
 popCount :: forall arch a. IntegralType a -> Operands a -> CodeGen arch (Operands Int)
 popCount i x
   | IntegralDict <- integralDict i
+  , Refl <- integralTypeIsResult i
   = do let ctpop = fromString $ printf "llvm.ctpop.i%d" (finiteBitSize (undefined::a))
            p     = ScalarPrimType (SingleScalarType (NumSingleType (IntegralNumType i)))
            t     = PrimType p
        --
-       c <- call (Lam p (op i x) (Body t Nothing ctpop)) [NoUnwind, ReadNone]
+       c <- call (lamUnnamed p (Body t Nothing ctpop)) (ArgumentsCons (op i x) [] ArgumentsNil) [NoUnwind, ReadNone]
        r <- fromIntegral i numType c
        return r
 
 countLeadingZeros :: forall arch a. IntegralType a -> Operands a -> CodeGen arch (Operands Int)
 countLeadingZeros i x
   | IntegralDict <- integralDict i
+  , Refl <- integralTypeIsResult i
   = do let clz = fromString $ printf "llvm.ctlz.i%d" (finiteBitSize (undefined::a))
            p   = ScalarPrimType (SingleScalarType (NumSingleType (IntegralNumType i)))
            t   = PrimType p
        --
-       c <- call (Lam p (op i x) (Lam primType (boolean False) (Body t Nothing clz))) [NoUnwind, ReadNone]
+       c <- call
+              (lamUnnamed p $ lamUnnamed primType $ Body t Nothing clz)
+              (ArgumentsCons (op i x) [] $ ArgumentsCons (boolean False) [] ArgumentsNil)
+              [NoUnwind, ReadNone]
        r <- fromIntegral i numType c
        return r
 
 countTrailingZeros :: forall arch a. IntegralType a -> Operands a -> CodeGen arch (Operands Int)
 countTrailingZeros i x
   | IntegralDict <- integralDict i
-  = do let clz = fromString $ printf "llvm.cttz.i%d" (finiteBitSize (undefined::a))
+  , Refl <- integralTypeIsResult i
+  = do let ctz = fromString $ printf "llvm.cttz.i%d" (finiteBitSize (undefined::a))
            p   = ScalarPrimType (SingleScalarType (NumSingleType (IntegralNumType i)))
            t   = PrimType p
        --
-       c <- call (Lam p (op i x) (Lam primType (boolean False) (Body t Nothing clz))) [NoUnwind, ReadNone]
+       c <- call
+              (lamUnnamed p $ lamUnnamed primType $ Body t Nothing ctz)
+              (ArgumentsCons (op i x) [] $ ArgumentsCons (boolean False) [] ArgumentsNil)
+              [NoUnwind, ReadNone]
        r <- fromIntegral i numType c
        return r
 
@@ -713,23 +723,28 @@ unless test doit = do
 -- TLM: We should really be able to construct functions of any arity.
 --
 mathf :: ShortByteString -> FloatingType t -> Operands t -> CodeGen arch (Operands t)
-mathf n f (op f -> x) = do
-  let s = ScalarPrimType (SingleScalarType (NumSingleType (FloatingNumType f)))
-      t = PrimType s
-  --
-  name <- lm f n
-  r    <- call (Lam s x (Body t Nothing name)) [NoUnwind, ReadOnly]
-  return r
+mathf n f (op f -> x)
+  | Refl <- floatingTypeIsResult f = do
+    let s = ScalarPrimType (SingleScalarType (NumSingleType (FloatingNumType f)))
+        t = PrimType s
+    --
+    name <- lm f n
+    r    <- call (lamUnnamed s (Body t Nothing name)) (ArgumentsCons x [] ArgumentsNil) [NoUnwind, ReadOnly]
+    return r
 
 
 mathf2 :: ShortByteString -> FloatingType t -> Operands t -> Operands t -> CodeGen arch (Operands t)
-mathf2 n f (op f -> x) (op f -> y) = do
-  let s = ScalarPrimType (SingleScalarType (NumSingleType (FloatingNumType f)))
-      t = PrimType s
-  --
-  name <- lm f n
-  r    <- call (Lam s x (Lam s y (Body t Nothing name))) [NoUnwind, ReadOnly]
-  return r
+mathf2 n f (op f -> x) (op f -> y)
+  | Refl <- floatingTypeIsResult f = do
+    let s = ScalarPrimType (SingleScalarType (NumSingleType (FloatingNumType f)))
+        t = PrimType s
+    --
+    name <- lm f n
+    r    <- call
+              (lamUnnamed s (lamUnnamed s (Body t Nothing name)))
+              (ArgumentsCons x [] $ ArgumentsCons y [] ArgumentsNil)
+              [NoUnwind, ReadOnly]
+    return r
 
 lm :: FloatingType t -> ShortByteString -> CodeGen arch Label
 lm t n

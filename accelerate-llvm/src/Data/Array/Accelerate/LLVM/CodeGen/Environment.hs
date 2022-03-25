@@ -1,6 +1,12 @@
-{-# LANGUAGE GADTs             #-}
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE PatternSynonyms   #-}
+{-# LANGUAGE GADTs                #-}
+{-# LANGUAGE OverloadedStrings    #-}
+{-# LANGUAGE PatternSynonyms      #-}
+{-# LANGUAGE RankNTypes           #-}
+{-# LANGUAGE ScopedTypeVariables  #-}
+{-# LANGUAGE TypeApplications     #-}
+{-# LANGUAGE TypeFamilies         #-}
+{-# LANGUAGE TypeOperators        #-}
+{-# LANGUAGE UndecidableInstances #-}
 {-# OPTIONS_HADDOCK hide #-}
 -- |
 -- Module      : Data.Array.Accelerate.LLVM.CodeGen.Environment
@@ -13,28 +19,41 @@
 --
 
 module Data.Array.Accelerate.LLVM.CodeGen.Environment
-  ( module Data.Array.Accelerate.LLVM.CodeGen.Environment, Env(..) )
+  ( Env(..)
+  , Val, prj
+  , Gamma, GroundOperand(..), AccessGroundR(..)
+  , aprjParameter, aprjParameters, aprjBuffer
+  , arraySize
+  , MarshalArg, MarshalFun, MarshalFun'
+  -- , scalarParameter, ptrParameter
+  , bindParameters
+  )
   where
 
 import Data.String
-import Text.Printf
 
-import Data.Array.Accelerate.AST.Exp                            ( shapeExpVars )
 import Data.Array.Accelerate.AST.Environment                    ( Env(..), prj' )
-import Data.Array.Accelerate.AST.Operation                      ( ExpVar, ExpVars, GroundVar, GroundR(..), Arg(..), bufferImpossible )
+import Data.Array.Accelerate.AST.Operation                      hiding (Parameter)
 import Data.Array.Accelerate.AST.Idx                            ( Idx )
-import Data.Array.Accelerate.AST.Var                            ( Var(..) )
 import Data.Array.Accelerate.Error                              ( internalError )
 import Data.Array.Accelerate.Array.Buffer
 import Data.Array.Accelerate.Representation.Type
 import Data.Array.Accelerate.Representation.Array
+import Data.Array.Accelerate.Type
 
 import Data.Array.Accelerate.LLVM.CodeGen.IR
 import Data.Array.Accelerate.LLVM.CodeGen.Sugar
 
+import LLVM.AST.Type.AddrSpace
+import LLVM.AST.Type.Function                                   as LLVM
+import LLVM.AST.Type.Global
+import LLVM.AST.Type.Instruction.Volatile
+import LLVM.AST.Type.Name
 import LLVM.AST.Type.Operand
+import LLVM.AST.Type.Representation
 
 import GHC.Stack
+import Data.Typeable
 
 
 -- Scalar environment
@@ -89,16 +108,96 @@ aprjBuffer (Var (GroundRbuffer _) idx) env =
     GroundOperandParam _       -> internalError "Scalar impossible"
 aprjBuffer (Var (GroundRscalar tp) _) _ = bufferImpossible tp
 
-{-
--- | Construct the array environment index, will be used by code generation to
--- map free array variable indices to names in the generated code.
---
-makeGamma :: IntMap (Idx' aenv) -> Gamma aenv
-makeGamma = snd . IM.mapAccum (\n ix -> (n+1, toAval n ix)) 0
-  where
-    toAval :: Int -> Idx' aenv -> (Label, Idx' aenv)
-    toAval n ix = (fromString (printf "fv%d" n), ix)
--}
-
 arraySize :: HasCallStack => Arg genv (m sh e) -> Gamma genv -> Operands sh
 arraySize (ArgArray _ (ArrayR shr _) sh _) = aprjParameters $ shapeExpVars shr sh
+
+type family MarshalArg a where
+  MarshalArg (Buffer e) = Ptr e
+  MarshalArg e = e
+
+-- | Converts a typed environment into a function type.
+-- For instance, (((), Int), Float) is converted to Int -> Float -> ().
+-- The accumulating parameter 'r' is needed as the type would be in reverse
+-- order without such accumulator.
+--
+type MarshalFun env = MarshalFun' env ()
+type family MarshalFun' env r where
+  MarshalFun' () r = r
+  MarshalFun' (env, t) r = MarshalFun' env (MarshalArg t -> r)
+
+bindParameters
+  :: Env AccessGroundR env
+  -> ( Result t :~: Result (MarshalFun' env t)
+     , GlobalFunctionDefinition t -> GlobalFunctionDefinition (MarshalFun' env t)
+     , Gamma env
+     )
+bindParameters env = (eq, fun, gamma)
+  where
+    (eq, fun, gamma, _, _) = bindParameters' env
+
+bindParameters'
+  :: forall env t. Env AccessGroundR env
+  -> ( Result t :~: Result (MarshalFun' env t)
+     , GlobalFunctionDefinition t -> GlobalFunctionDefinition (MarshalFun' env t)
+     , Gamma env
+     , Int -- Next fresh scalar variable index
+     , Int -- Next fresh buffer variable index
+     -- TODO: Should we have separate indices for in, mut and out buffers?
+     )
+bindParameters' Empty = (Refl, id, Empty, 0, 0)
+bindParameters' (Push env (AccessGroundRscalar tp :: AccessGroundR s))
+  | (eq, fun, gamma, nextScalar, nextBuffer) <- bindParameters' env =
+  let
+    operand = LocalReference (PrimType $ ScalarPrimType tp) name
+    name = fromString $ "param." ++ show nextScalar
+
+    -- Not sure why, but it seems GHC gets confused if we pattern match for
+    -- 's ~ MarshalArg s' on toplevel, hence we do that nested here.
+    --
+    tp' :: ScalarType (MarshalArg s)
+    name' :: Name (MarshalArg s)
+    (tp', name')
+      | Refl <- marshalScalarArg @s tp = (tp, name)
+  in
+    ( case eq of Refl -> Refl -- Again, we need to pattern match nested
+    , \b -> fun $ LLVM.Lam (ScalarPrimType tp') name' b
+    , gamma `Push` GroundOperandParam operand
+    , nextScalar + 1
+    , nextBuffer
+    )
+bindParameters' (Push env (AccessGroundRbuffer m tp))
+  | (eq, fun, gamma, nextScalar, nextBuffer) <- bindParameters' env =
+  let
+    operand = LocalReference (PrimType $ PtrPrimType (ScalarPrimType tp) defaultAddrSpace) name
+    prefix = case m of
+      In  -> "in."
+      Out -> "out."
+      Mut -> "mut."
+    name = fromString $ prefix ++ show nextBuffer
+    irbuffer = IRBuffer (Just (operand, defaultAddrSpace, NonVolatile)) Nothing
+  in
+    ( case eq of Refl -> Refl -- Again, we need to pattern match nested
+    , \b -> fun $ LLVM.Lam (PtrPrimType (ScalarPrimType tp) defaultAddrSpace) name b
+    , gamma `Push` GroundOperandBuffer irbuffer
+    , nextScalar
+    , nextBuffer + 1
+    )
+
+marshalScalarArg :: ScalarType t -> t :~: MarshalArg t
+-- Pattern match to prove that 't' is not a buffer
+marshalScalarArg (VectorScalarType _) = Refl
+marshalScalarArg (SingleScalarType (NumSingleType (IntegralNumType tp))) = case tp of
+  TypeInt    -> Refl
+  TypeInt8   -> Refl
+  TypeInt16  -> Refl
+  TypeInt32  -> Refl
+  TypeInt64  -> Refl
+  TypeWord   -> Refl
+  TypeWord8  -> Refl
+  TypeWord16 -> Refl
+  TypeWord32 -> Refl
+  TypeWord64 -> Refl
+marshalScalarArg (SingleScalarType (NumSingleType (FloatingNumType tp))) = case tp of
+  TypeHalf   -> Refl
+  TypeFloat  -> Refl
+  TypeDouble -> Refl

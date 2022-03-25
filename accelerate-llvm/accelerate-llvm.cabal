@@ -80,7 +80,6 @@ Library
     Data.Array.Accelerate.LLVM.CodeGen.IR
     Data.Array.Accelerate.LLVM.CodeGen.Intrinsic
     Data.Array.Accelerate.LLVM.CodeGen.Loop
-    Data.Array.Accelerate.LLVM.CodeGen.Module
     Data.Array.Accelerate.LLVM.CodeGen.Monad
     Data.Array.Accelerate.LLVM.CodeGen.Permute
     Data.Array.Accelerate.LLVM.CodeGen.Profile
@@ -108,6 +107,7 @@ Library
     LLVM.AST.Type.Instruction.RMW
     LLVM.AST.Type.Instruction.Volatile
     LLVM.AST.Type.Metadata
+    LLVM.AST.Type.Module
     LLVM.AST.Type.Name
     LLVM.AST.Type.Operand
     LLVM.AST.Type.Representation

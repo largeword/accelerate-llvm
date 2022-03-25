@@ -362,9 +362,10 @@ data Instruction a where
 
   -- <http://llvm.org/docs/LangRef.html#call-instruction>
   --
-  Call            :: Function (Either InlineAssembly Label) args t
+  Call            :: Function (Either InlineAssembly Label) t
+                  -> Arguments t
                   -> [Either GroupID FunctionAttribute]
-                  -> Instruction t
+                  -> Instruction (Result t)
 
   -- <http://llvm.org/docs/LangRef.html#select-instruction>
   --
@@ -430,7 +431,7 @@ instance Downcast (Instruction a) LLVM.Instruction where
     Select _ p x y        -> LLVM.Select (downcast p) (downcast x) (downcast y) md
     IsNaN _ x             -> isNaN (downcast x)
     Cmp t p x y           -> cmp t p (downcast x) (downcast y)
-    Call f a              -> call f a
+    Call f args a         -> call f args a
 
     where
       nsw :: Bool       -- no signed wrap
@@ -570,25 +571,28 @@ instance Downcast (Instruction a) LLVM.Instruction where
           ui GT = IP.UGT
           ui GE = IP.UGE
 
-      call :: Function (Either InlineAssembly Label) args t -> [Either GroupID FunctionAttribute] -> LLVM.Instruction
-      call f as = LLVM.Call tail LLVM.C [] target argv (downcast as) md
+      call :: Function (Either InlineAssembly Label) t -> Arguments t -> [Either GroupID FunctionAttribute] -> LLVM.Instruction
+      call f args as = LLVM.Call tail LLVM.C [] target (travArgs args) (downcast as) md
         where
-          trav :: Function (Either InlineAssembly Label) args t
+          trav :: Function (Either InlineAssembly Label) t
                -> ( [LLVM.Type]                                 -- argument types
-                  , [(LLVM.Operand, [LLVM.ParameterAttribute])] -- argument operands
                   , Maybe LLVM.TailCallKind                     -- calling kind
                   , LLVM.Type                                   -- return type
                   , LLVM.CallableOperand                        -- function name or inline assembly
                   )
           trav (Body u k o) =
             case o of
-              Left asm -> ([], [], downcast k, downcast u, Left  (downcast (LLVM.FunctionType ret argt False, asm)))
-              Right n  -> ([], [], downcast k, downcast u, Right (LLVM.ConstantOperand (LLVM.GlobalReference ptr_fun_ty (downcast n))))
-          trav (Lam t x l)  =
-            let (ts, xs, k, r, n)  = trav l
-            in  (downcast t : ts, (downcast x, []) : xs, k, r, n)
+              Left asm -> ([], downcast k, downcast u, Left  (downcast (LLVM.FunctionType ret argt False, asm)))
+              Right n  -> ([], downcast k, downcast u, Right (LLVM.ConstantOperand (LLVM.GlobalReference ptr_fun_ty (downcast n))))
+          trav (Lam t _ l)  =
+            let (ts, k, r, n) = trav l
+            in  (downcast t : ts, k, r, n)
 
-          (argt, argv, tail, ret, target) = trav f
+          travArgs :: Arguments t -> [(LLVM.Operand, [LLVM.ParameterAttribute])]
+          travArgs (ArgumentsCons operand attrs args') = (downcast operand, attrs) : travArgs args'
+          travArgs ArgumentsNil = []
+
+          (argt, tail, ret, target) = trav f
           fun_ty                          = LLVM.FunctionType ret argt False
           ptr_fun_ty                      = LLVM.PointerType fun_ty (LLVM.AddrSpace 0)
 
@@ -639,7 +643,7 @@ instance TypeOf Instruction where
     IsNaN{}               -> type'
     Phi t _               -> PrimType t
     Select _ _ x _        -> typeOf x
-    Call f _              -> fun f
+    Call f _ _            -> fun f
     where
       typeOfVec :: HasCallStack => Operand (Vec n a) -> Type a
       typeOfVec x
@@ -670,7 +674,7 @@ instance TypeOf Instruction where
       bounded :: BoundedType a -> Type a
       bounded (IntegralBoundedType t) = integral t
 
-      fun :: Function kind args a -> Type a
+      fun :: Function kind a -> Type (Result a)
       fun (Lam _ _ l)  = fun l
       fun (Body t _ _) = t
 

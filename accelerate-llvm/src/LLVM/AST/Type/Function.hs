@@ -1,7 +1,9 @@
+{-# LANGUAGE LambdaCase            #-}
 {-# LANGUAGE DataKinds             #-}
 {-# LANGUAGE GADTs                 #-}
 {-# LANGUAGE KindSignatures        #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE TypeFamilies          #-}
 {-# LANGUAGE TypeOperators         #-}
 {-# OPTIONS_HADDOCK hide #-}
 -- |
@@ -26,6 +28,7 @@ import qualified LLVM.AST.Attribute                                 as LLVM
 import qualified LLVM.AST.Global                                    as LLVM
 import qualified LLVM.AST.Instruction                               as LLVM
 
+import Data.Typeable
 
 -- | Attributes for the function call instruction
 --
@@ -61,10 +64,12 @@ data GroupID = GroupID !Word
 -- | Functions are arguments to the 'call' instruction; either global
 -- functions or inline assembly.
 --
-data Function kind args t where
-  Body :: Type r -> Maybe TailCall -> kind                -> Function kind '[]         r
-  Lam  :: PrimType a -> Operand a -> Function kind args t -> Function kind (a ': args) t
+data Function kind t where
+  Body :: Result r ~ r => Type r -> Maybe TailCall -> kind -> Function kind r
+  Lam  :: PrimType a -> Name a -> Function kind t -> Function kind (a -> t)
 
+lamUnnamed :: PrimType a -> Function kind t -> Function kind (a -> t)
+lamUnnamed tp = Lam tp (UnName 0)
 
 instance Downcast FunctionAttribute LLVM.FunctionAttribute where
   downcast NoReturn            = LLVM.NoReturn
@@ -90,3 +95,35 @@ instance Downcast TailCall LLVM.TailCallKind where
 instance Downcast GroupID LLVM.GroupID where
   downcast (GroupID n) = LLVM.GroupID n
 
+type family Result t where
+  Result (s -> t) = Result t
+  Result t        = t
+
+scalarTypeIsResult :: ScalarType r -> r :~: Result r
+scalarTypeIsResult (VectorScalarType _) = Refl
+scalarTypeIsResult (SingleScalarType (NumSingleType tp)) = case tp of
+  IntegralNumType t -> integralTypeIsResult t
+  FloatingNumType t -> floatingTypeIsResult t
+
+integralTypeIsResult :: IntegralType r -> r :~: Result r
+integralTypeIsResult = \case
+  TypeInt    -> Refl
+  TypeInt8   -> Refl
+  TypeInt16  -> Refl
+  TypeInt32  -> Refl
+  TypeInt64  -> Refl
+  TypeWord   -> Refl
+  TypeWord8  -> Refl
+  TypeWord16 -> Refl
+  TypeWord32 -> Refl
+  TypeWord64 -> Refl
+
+floatingTypeIsResult :: FloatingType r -> r :~: Result r
+floatingTypeIsResult = \case
+  TypeHalf   -> Refl
+  TypeFloat  -> Refl
+  TypeDouble -> Refl
+
+data Arguments f where
+  ArgumentsCons :: Operand a -> [LLVM.ParameterAttribute] -> Arguments f -> Arguments (a -> f)
+  ArgumentsNil  :: Result f ~ f => Arguments f
