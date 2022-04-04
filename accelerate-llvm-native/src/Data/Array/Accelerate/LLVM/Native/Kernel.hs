@@ -15,7 +15,9 @@
 --
 
 module Data.Array.Accelerate.LLVM.Native.Kernel (
-  NativeKernel(..)
+  NativeKernel(..),
+  NativeKernelMetadata(..),
+  KernelType
 ) where
 
 -- accelerate
@@ -29,51 +31,62 @@ import Data.Array.Accelerate.AST.Var
 import Data.Array.Accelerate.AST.Kernel
 import Data.Array.Accelerate.AST.Schedule.Uniform
 import Data.Array.Accelerate.Backend
+import Data.Array.Accelerate.Error
 import Data.Array.Accelerate.Lifetime
+
+import Data.Array.Accelerate.LLVM.State
+import Data.Array.Accelerate.LLVM.Native.State
 import Data.Array.Accelerate.LLVM.Native.Operation
 import Data.Array.Accelerate.LLVM.Native.Compile.Cache
+import Data.Array.Accelerate.LLVM.Native.CodeGen
+import Data.Array.Accelerate.LLVM.Native.Compile
+import Data.Array.Accelerate.LLVM.Native.Link
 import Data.Array.Accelerate.LLVM.CodeGen.Environment
 import Data.Array.Accelerate.LLVM.CodeGen.Base
+import Data.Array.Accelerate.LLVM.Native.CodeGen.Base
+import Data.Array.Accelerate.LLVM.Native.Execute.Marshal
+import qualified LLVM.AST                                           as LLVM
 import LLVM.AST.Type.Function
 import Data.ByteString.Short                                        ( ShortByteString )
 import System.FilePath                                              ( FilePath, (<.>) )
+import System.IO.Unsafe
 import Control.DeepSeq
 import Data.Typeable
 import Foreign.LibFFI
 import Foreign.Ptr
+import Prettyprinter
+import LLVM.AST.Type.Downcast
+import LLVM.AST.Type.Representation
 
 data NativeKernel env where
   NativeKernel
-    :: Result f ~ ()
-    => { kernelId       :: {-# UNPACK #-} !UID
-       , kernelFunction :: !(Lifetime (FunPtr f))
-       , kernelSize     :: !(KernelSize sh env f)
+    :: { kernelId       :: {-# UNPACK #-} !UID
+       , kernelFunction :: !(Lifetime (FunPtr (KernelType env)))
        }
     -> NativeKernel env
 
-data KernelSize sh env f where
-  -- Kernels are started with an inclusive lower and exclusive upper bound
-  KernelSizeDynamic
-    :: ShapeR sh
-    -> ExpVars env sh
-    -> KernelSize sh env (MarshalScalars sh (MarshalScalars sh (MarshalFun env)))
-
-  -- Kernels are started with ids within the range 0 (inclusive) to n (exclusive)
-  KernelSizeIds
-    :: ExpVar env Int -- n
-    -> KernelSize sh env (Int -> MarshalFun env)
-
-instance NFData (KernelSize sh env f) where
-  rnf (KernelSizeDynamic shr vars) = rnfShapeR shr `seq` rnfVars rnfScalarType vars
-  rnf (KernelSizeIds var)          = rnfVar rnfScalarType var
-
 instance NFData' NativeKernel where
-  rnf' (NativeKernel !_ fn sz) = unsafeGetValue fn `seq` rnf sz
+  rnf' (NativeKernel !_ fn) = unsafeGetValue fn `seq` ()
+
+newtype NativeKernelMetadata f =
+  NativeKernelMetadata { kernelArgsSize :: Int }
+
+instance NFData' NativeKernelMetadata where
+  rnf' (NativeKernelMetadata sz) = rnf sz
 
 instance IsKernel NativeKernel where
   type KernelOperation NativeKernel = NativeOp
+  type KernelMetadata  NativeKernel = NativeKernelMetadata
 
-  -- compileKernel :: Env AccessGroundR env -> Cluster (KernelOperation NativeKernel) args -> Args env args -> NativeKernel env
-  -- TODO: Implement compileKernel
-  -- Not sure if this type is actually good.
-  compileKernel = undefined
+  compileKernel env cluster args = unsafePerformIO $ evalLLVM defaultTarget $ do
+    module' <- codegen uid env cluster args
+    obj <- compile uid module'
+    funPtr <- link obj
+    return $ NativeKernel uid funPtr
+    where
+      uid = hashOperation cluster
+
+  kernelMetadata kernel = NativeKernelMetadata $ sizeOfEnv kernel
+
+instance PrettyKernel NativeKernel where
+  prettyKernel = PrettyKernelBody True $ \_ kernel -> viaShow $ kernelId kernel

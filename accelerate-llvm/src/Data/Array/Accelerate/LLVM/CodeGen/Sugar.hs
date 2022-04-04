@@ -22,9 +22,9 @@ module Data.Array.Accelerate.LLVM.CodeGen.Sugar (
 
 ) where
 
+import Data.Array.Accelerate.Array.Buffer
 import LLVM.AST.Type.AddrSpace
 import LLVM.AST.Type.Instruction.Volatile
-import LLVM.AST.Type.Module
 import LLVM.AST.Type.Operand
 import Foreign.Ptr
 
@@ -62,7 +62,7 @@ data IRBuffer e
       -- If the buffer is not fused away, then a pointer to the buffer, its
       -- address space and volatility are stored.
       --
-      (Maybe (Operand (Ptr e), AddrSpace, Volatility))
+      (Maybe (Operand (Ptr (ScalarArrayDataR e)), AddrSpace, Volatility))
       -- If the buffer is fused away, then it is replaced by a local variable.
       -- In case of diagonal fusion, the buffer does exist but later reads to
       -- the buffer are replaced by a local variable. That variable is stored

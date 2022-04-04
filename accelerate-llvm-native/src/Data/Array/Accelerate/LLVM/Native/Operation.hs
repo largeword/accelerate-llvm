@@ -1,6 +1,8 @@
 {-# LANGUAGE BangPatterns      #-}
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs             #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TemplateHaskell   #-}
 {-# LANGUAGE TypeFamilies      #-}
 
 -- |
@@ -21,6 +23,8 @@ module Data.Array.Accelerate.LLVM.Native.Operation (
 
 import Data.Array.Accelerate.AST.Exp
 import Data.Array.Accelerate.AST.Operation
+import Data.Array.Accelerate.Analysis.Hash.Exp
+import Data.Array.Accelerate.Analysis.Hash.Operation
 import Data.Array.Accelerate.Backend
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels
@@ -65,6 +69,11 @@ instance SLVOperation NativeOp where
   slvOperation NBackpermute = defaultSlvBackpermute NBackpermute
   slvOperation _ = Nothing
 
+instance EncodeOperation NativeOp where
+  encodeOperation NMap         = intHost $(hashQ ("Map" :: String))
+  encodeOperation NBackpermute = intHost $(hashQ ("Map" :: String))
+  encodeOperation NGenerate    = intHost $(hashQ ("Map" :: String))
+  encodeOperation NPermute     = intHost $(hashQ ("Map" :: String))
 
 -- No fusion at all
 noFusion :: Set Label -> Label -> Information NativeOp
@@ -87,3 +96,12 @@ instance MakesILP NativeOp where
   labelLabelledArg _ _ (L x y) = LOp x y ()
   getClusterArg _ = None
   finalize = const mempty
+
+  encodeBackendClusterArg _ = mempty
+
+instance NFData' (BackendClusterArg NativeOp) where
+  rnf' !_ = ()
+
+instance ShrinkArg (BackendClusterArg NativeOp) where
+  shrinkArg _ None = None
+  deadArg None = None

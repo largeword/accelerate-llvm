@@ -228,8 +228,8 @@ atomicCAS_rmw' t i update addr = withDict (integralElt i) $ do
   val   <- update $ ir t old
   val'  <- instr' $ BitCast si (op t val)
   r     <- instr' $ CmpXchg i NonVolatile addr' (op i old') val' (CrossThread, AcquireRelease) Monotonic
-  done  <- instr' $ ExtractValue scalarType PairIdxRight r
-  next' <- instr' $ ExtractValue si         PairIdxLeft  r
+  done  <- instr' $ ExtractValue primType            (TupleIdxRight TupleIdxSelf) r
+  next' <- instr' $ ExtractValue (ScalarPrimType si) (TupleIdxLeft  TupleIdxSelf) r
 
   -- Since we removed Bool from the set of primitive types Accelerate
   -- supports, we have to do a small hack to have LLVM consider this as its
@@ -328,8 +328,8 @@ atomicCAS_cmp' t i cmp addr val = withDict (singleElt t) $ do
   setBlock spin
   old'  <- instr' $ BitCast si (op t old)
   r     <- instr' $ CmpXchg i NonVolatile addr' old' val' (CrossThread, AcquireRelease) Monotonic
-  done  <- instr' $ ExtractValue scalarType PairIdxRight r
-  next  <- instr' $ ExtractValue si         PairIdxLeft  r
+  done  <- instr' $ ExtractValue primType            (TupleIdxRight TupleIdxSelf) r
+  next  <- instr' $ ExtractValue (ScalarPrimType si) (TupleIdxLeft  TupleIdxSelf) r
   next' <- instr' $ BitCast (SingleScalarType t) next
 
   done' <- case done of

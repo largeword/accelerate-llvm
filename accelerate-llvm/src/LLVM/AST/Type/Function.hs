@@ -127,3 +127,7 @@ floatingTypeIsResult = \case
 data Arguments f where
   ArgumentsCons :: Operand a -> [LLVM.ParameterAttribute] -> Arguments f -> Arguments (a -> f)
   ArgumentsNil  :: Result f ~ f => Arguments f
+
+functionBody :: Function kind t -> kind
+functionBody (Lam _ _ f) = functionBody f
+functionBody (Body _ _ b) = b

@@ -24,9 +24,10 @@ module Data.Array.Accelerate.LLVM.CodeGen.Environment
   , Gamma, GroundOperand(..), AccessGroundR(..)
   , aprjParameter, aprjParameters, aprjBuffer
   , arraySize
-  , MarshalArg, MarshalFun, MarshalFun'
+  , MarshalArg, MarshalFun, MarshalFun', MarshalEnv
+  , marshalScalarArg
   -- , scalarParameter, ptrParameter
-  , bindParameters
+  , bindParameters, bindEnv, envType
   )
   where
 
@@ -43,10 +44,13 @@ import Data.Array.Accelerate.Type
 
 import Data.Array.Accelerate.LLVM.CodeGen.IR
 import Data.Array.Accelerate.LLVM.CodeGen.Sugar
+import Data.Array.Accelerate.LLVM.CodeGen.Monad
 
 import LLVM.AST.Type.AddrSpace
+import LLVM.AST.Type.Downcast
 import LLVM.AST.Type.Function                                   as LLVM
 import LLVM.AST.Type.Global
+import LLVM.AST.Type.Instruction
 import LLVM.AST.Type.Instruction.Volatile
 import LLVM.AST.Type.Name
 import LLVM.AST.Type.Operand
@@ -112,7 +116,7 @@ arraySize :: HasCallStack => Arg genv (m sh e) -> Gamma genv -> Operands sh
 arraySize (ArgArray _ (ArrayR shr _) sh _) = aprjParameters $ shapeExpVars shr sh
 
 type family MarshalArg a where
-  MarshalArg (Buffer e) = Ptr e
+  MarshalArg (Buffer e) = Ptr (ScalarArrayDataR e)
   MarshalArg e = e
 
 -- | Converts a typed environment into a function type.
@@ -124,6 +128,88 @@ type MarshalFun env = MarshalFun' env ()
 type family MarshalFun' env r where
   MarshalFun' () r = r
   MarshalFun' (env, t) r = MarshalFun' env (MarshalArg t -> r)
+
+type family MarshalEnv env where
+  MarshalEnv (env, t) = (MarshalEnv env, MarshalArg t)
+  MarshalEnv ()       = ()
+
+envType :: Env AccessGroundR env -> TupR PrimType (MarshalEnv env)
+envType Empty = TupRunit
+envType (Push env (AccessGroundRscalar tp))
+  | Refl <- marshalScalarArg tp = envType env `TupRpair` TupRsingle (ScalarPrimType tp)
+envType (Push env (AccessGroundRbuffer _ (SingleScalarType tp)))
+  | SingleArrayDict <- singleArrayDict tp 
+  = envType env `TupRpair` TupRsingle (PtrPrimType (ScalarPrimType $ SingleScalarType tp) defaultAddrSpace)
+envType (Push env (AccessGroundRbuffer _ (VectorScalarType (VectorType n tp))))
+  = envType env `TupRpair` TupRsingle (PtrPrimType (ScalarPrimType $ SingleScalarType tp) defaultAddrSpace)
+
+bindEnv
+  :: forall arch env. Env AccessGroundR env
+  -> ( PrimType (Struct (MarshalEnv env))
+     , CodeGen arch ()
+     , Gamma env
+     )
+bindEnv environment =
+  let (gen, gamma, _, _) = go id environment in (envTp, gen, gamma)
+  where
+    envTp = StructPrimType False $ envType environment
+    operandEnv = LocalReference (PrimType (PtrPrimType envTp defaultAddrSpace)) "env"
+    go :: (forall t. TupleIdx (MarshalEnv env') t -> TupleIdx (MarshalEnv env) t)
+       -> Env AccessGroundR env'
+       -> ( CodeGen arch ()
+          , Gamma env'
+          , Int -- Next fresh scalar variable index
+          , Int -- Next fresh buffer variable index
+          )
+    go _ Empty = (return (), Empty, 0, 0)
+    go toTupleIdx (Push env (AccessGroundRscalar tp))
+      | Refl <- marshalScalarArg tp = 
+        ( instr_ (downcast $
+            namePtr := GetStructElementPtr (ScalarPrimType tp) operandEnv (toTupleIdx $ TupleIdxRight TupleIdxSelf)
+          ) 
+          >> instr_ (downcast $
+            name := Load tp NonVolatile operandPtr
+          )
+          >> codegen
+        , gamma `Push` GroundOperandParam operand
+        , freshScalar + 1
+        , freshBuffer
+        )
+      where
+        (codegen, gamma, freshScalar, freshBuffer) = go (toTupleIdx . TupleIdxLeft) env
+        operand = LocalReference (PrimType $ ScalarPrimType tp) name
+        operandPtr = LocalReference (PrimType $ PtrPrimType (ScalarPrimType tp) defaultAddrSpace) namePtr
+        name = fromString $ "param." ++ show freshScalar
+        namePtr = fromString $ "param." ++ show freshScalar ++ ".ptr"
+    go toTupleIdx (Push env (AccessGroundRbuffer m (tp :: ScalarType t))) =
+      ( instr_ (downcast $
+          namePtr := GetStructElementPtr ptrType operandEnv (toTupleIdx $ TupleIdxRight TupleIdxSelf)
+        )
+        >> instr_ (downcast $
+          name := LoadPtr NonVolatile operandPtr
+        )
+        >> codegen
+      , gamma `Push` GroundOperandBuffer irbuffer
+      , freshScalar
+      , freshBuffer + 1
+      )
+      where
+        (codegen, gamma, freshScalar, freshBuffer) = go (toTupleIdx . TupleIdxLeft) env
+        operand = LocalReference (PrimType ptrType) name
+        operandPtr = LocalReference (PrimType $ PtrPrimType ptrType defaultAddrSpace) namePtr
+        prefix = case m of
+          In  -> "in."
+          Out -> "out."
+          Mut -> "mut."
+        name = fromString $ prefix ++ show freshBuffer
+        namePtr = fromString $ prefix ++ show freshBuffer ++ ".ptr"
+        irbuffer :: IRBuffer t
+        irbuffer = IRBuffer (Just (operand, defaultAddrSpace, NonVolatile)) Nothing
+        ptrType :: PrimType (MarshalArg (Buffer t))
+        ptrType = case tp of
+          SingleScalarType t
+            | SingleArrayDict <- singleArrayDict t -> PtrPrimType (ScalarPrimType tp) defaultAddrSpace
+          VectorScalarType (VectorType _ t) -> PtrPrimType (ScalarPrimType $ SingleScalarType t) defaultAddrSpace
 
 bindParameters
   :: Env AccessGroundR env
@@ -168,16 +254,20 @@ bindParameters' (Push env (AccessGroundRscalar tp :: AccessGroundR s))
 bindParameters' (Push env (AccessGroundRbuffer m tp))
   | (eq, fun, gamma, nextScalar, nextBuffer) <- bindParameters' env =
   let
-    operand = LocalReference (PrimType $ PtrPrimType (ScalarPrimType tp) defaultAddrSpace) name
+    operand = LocalReference (PrimType ptrType) name
     prefix = case m of
       In  -> "in."
       Out -> "out."
       Mut -> "mut."
     name = fromString $ prefix ++ show nextBuffer
     irbuffer = IRBuffer (Just (operand, defaultAddrSpace, NonVolatile)) Nothing
+    ptrType = case tp of
+      SingleScalarType t
+        | SingleArrayDict <- singleArrayDict t -> PtrPrimType (ScalarPrimType tp) defaultAddrSpace
+      VectorScalarType (VectorType _ t) -> PtrPrimType (ScalarPrimType $ SingleScalarType t) defaultAddrSpace
   in
     ( case eq of Refl -> Refl -- Again, we need to pattern match nested
-    , \b -> fun $ LLVM.Lam (PtrPrimType (ScalarPrimType tp) defaultAddrSpace) name b
+    , \b -> fun $ LLVM.Lam ptrType name b
     , gamma `Push` GroundOperandBuffer irbuffer
     , nextScalar
     , nextBuffer + 1

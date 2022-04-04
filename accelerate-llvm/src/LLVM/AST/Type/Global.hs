@@ -2,6 +2,7 @@
 {-# LANGUAGE GADTs                 #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE ParallelListComp      #-}
+{-# LANGUAGE TypeApplications      #-}
 {-# LANGUAGE TypeSynonymInstances  #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 {-# OPTIONS_HADDOCK hide #-}
@@ -25,7 +26,6 @@ import LLVM.AST.Type.Name
 import qualified LLVM.AST.Global                                    as LLVM
 import qualified LLVM.AST.Name                                      as LLVM
 import qualified LLVM.AST.Type                                      as LLVM
-
 
 -- | A global function definition.
 --

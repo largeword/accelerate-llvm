@@ -24,10 +24,12 @@ import Data.Array.Accelerate.LLVM.CodeGen.Profile
 import Data.Array.Accelerate.LLVM.CodeGen.Sugar
 import Data.Array.Accelerate.LLVM.Compile.Cache
 import Data.Array.Accelerate.LLVM.Native.Target                     ( Native )
+import Data.Array.Accelerate.LLVM.Native.Foreign                    ()
 import Data.Array.Accelerate.Representation.Shape
 import Data.Array.Accelerate.Representation.Type
 import Data.Array.Accelerate.Type
 
+import LLVM.AST.Type.Representation
 import LLVM.AST.Type.Downcast
 import LLVM.AST.Type.Name
 import LLVM.AST.Type.Module
@@ -36,3 +38,5 @@ import qualified LLVM.AST.Type                                      as LLVM
 
 import Data.String
 import qualified Data.ByteString.Short.Char8                        as S8
+
+type KernelType env = Ptr (Struct (MarshalEnv env)) -> ()

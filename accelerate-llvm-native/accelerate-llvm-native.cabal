@@ -110,6 +110,7 @@ Library
     Data.Array.Accelerate.LLVM.Native.Execute.Divide
     Data.Array.Accelerate.LLVM.Native.Execute.Marshal
     Data.Array.Accelerate.LLVM.Native.Execute.Scheduler
+    Data.Array.Accelerate.LLVM.Native.Execute.Kernel
 
     Data.Array.Accelerate.LLVM.Native.Plugin.Annotation
     Data.Array.Accelerate.LLVM.Native.Plugin.BuildInfo
@@ -138,6 +139,7 @@ Library
         , llvm-hs-pure                  >= 4.1 && < 14
         , lockfree-queue                >= 0.2
         , mtl                           >= 2.2.1
+        , prettyprinter                 >= 1.7
           -- TODO: These are only used for lifting ByteStrings. bytestring
           --       0.11.2.0 include its own, better lifting instances. Once
           --       that's stable, we can remove this dependency and bump

@@ -3,6 +3,7 @@
 {-# LANGUAGE ForeignFunctionInterface #-}
 {-# LANGUAGE GADTs                    #-}
 {-# LANGUAGE LambdaCase               #-}
+{-# LANGUAGE MultiParamTypeClasses    #-}
 {-# LANGUAGE OverloadedStrings        #-}
 {-# LANGUAGE RecordWildCards          #-}
 {-# LANGUAGE ScopedTypeVariables      #-}
@@ -27,6 +28,143 @@ module Data.Array.Accelerate.LLVM.Native.Execute (
   -- executeOpenAcc
 
 ) where
+
+import Data.Array.Accelerate.Type
+import Data.Array.Accelerate.Representation.Type
+import Data.Array.Accelerate.Representation.Shape
+import Data.Array.Accelerate.AST.Environment
+import Data.Array.Accelerate.AST.Execute
+import Data.Array.Accelerate.AST.Idx
+import Data.Array.Accelerate.AST.Kernel
+import Data.Array.Accelerate.AST.Schedule
+import Data.Array.Accelerate.AST.Schedule.Uniform
+import Data.Array.Accelerate.Array.Buffer
+import Data.Array.Accelerate.Interpreter                ( evalExp )
+import Data.Array.Accelerate.Error
+import Data.Array.Accelerate.LLVM.Native.Kernel
+import Data.Array.Accelerate.LLVM.Native.Execute.Kernel
+
+import Data.IORef
+import Control.Monad
+import Control.Concurrent
+import Control.Concurrent.MVar
+
+
+instance Execute UniformScheduleFun NativeKernel where
+  executeAfunSchedule = const $ executeScheduleFun Empty
+
+executeScheduleFun :: Val env -> UniformScheduleFun NativeKernel env t -> IOFun t
+executeScheduleFun env (Sbody schedule) = executeSchedule env schedule
+executeScheduleFun env (Slam lhs fun) = \input -> executeScheduleFun (env `push` (lhs, input)) fun
+
+executeSchedule :: Val env -> UniformSchedule NativeKernel env -> IO ()
+executeSchedule !env = \case
+  Return -> return ()
+  Alet lhs binding body -> do
+    value <- executeBinding env binding
+    let env' = env `push` (lhs, value)
+    executeSchedule env' body
+  Effect effect next -> do
+    executeEffect env effect
+    executeSchedule env next
+  Acond var true false next -> do
+    let value = prj (varIdx var) env
+    let branch = if value == 1 then true else false
+    executeSchedule env branch
+    executeSchedule env next
+  Awhile io step input next -> do
+    executeAwhile env io step (prjVars input env)
+    executeSchedule env next
+  Fork a b -> do
+    _ <- forkIO (executeSchedule env b)
+    executeSchedule env a
+
+executeBinding :: Val env -> Binding env t -> IO t
+executeBinding env = \case
+  Compute expr ->
+    return $ evalExp expr env
+  NewSignal -> do
+    mvar <- newEmptyMVar
+    return (Signal mvar, SignalResolver mvar)
+  NewRef _ -> do
+    ioref <- newIORef $ internalError "Illegal schedule: Read from ref without value. Some synchronization might be missing."
+    return (Ref ioref, OutputRef ioref)
+  Alloc shr tp sh -> do
+    let n = size shr $ prjVars sh env
+    MutableBuffer buffer <- newBuffer tp n
+    return $ Buffer buffer
+  Use _ _ buffer ->
+    return buffer
+  Unit (Var tp ix) -> do
+    mbuffer@(MutableBuffer buffer) <- newBuffer tp 1
+    writeBuffer tp mbuffer 0 $ prj ix env
+    return $ Buffer buffer
+  RefRead ref -> do
+    let Ref ioref = prj (varIdx ref) env
+    readIORef ioref
+
+executeEffect :: forall env. Val env -> Effect NativeKernel env -> IO ()
+executeEffect env = \case
+  Exec md kernelFun args ->
+    callKernel env md kernelFun args
+  SignalAwait signals -> mapM_ await signals
+  SignalResolve signals -> mapM_ resolve signals
+  RefWrite ref valueVar -> do
+    let OutputRef ioref = prj (varIdx ref) env
+    let value = prj (varIdx valueVar) env
+    writeIORef ioref value
+  where
+    await :: Idx env Signal -> IO ()
+    await idx = do
+      let Signal mvar = prj idx env
+      readMVar mvar
+
+    resolve :: Idx env SignalResolver -> IO ()
+    resolve idx = do
+      let SignalResolver mvar = prj idx env
+      putMVar mvar ()
+
+executeAwhile
+  :: Val env
+  -> InputOutputR input output
+  -> UniformScheduleFun NativeKernel env (input -> Output PrimBool -> output -> ())
+  -> input
+  -> IO ()
+executeAwhile env io step input = do
+  -- Set up the output variables for this iteration (and the input for the next)
+  (Signal mvarCondition, signalResolverCondition) <- executeBinding env NewSignal
+  (Ref iorefCondition, outputRefCondition) <- executeBinding env $ NewRef $ GroundRscalar scalarType
+  (output, nextInput) <- bindAwhileIO io
+
+  -- Execute a step
+  executeScheduleFun env step input (signalResolverCondition, outputRefCondition) output
+
+  -- Check condition
+  readMVar mvarCondition
+  condition <- readIORef iorefCondition
+  when (condition == 1) $
+    executeAwhile env io step nextInput
+
+bindAwhileIO :: InputOutputR input output -> IO (output, input)
+bindAwhileIO InputOutputRsignal = do
+  mvar <- newEmptyMVar
+  return (SignalResolver mvar, Signal mvar)
+bindAwhileIO InputOutputRref = do
+  ioref <- newIORef $ internalError "Illegal schedule: Read from ref without value. Some synchronization might be missing."
+  return (OutputRef ioref, Ref ioref)
+bindAwhileIO (InputOutputRpair io1 io2) = do
+  (output1, input1) <- bindAwhileIO io1
+  (output2, input2) <- bindAwhileIO io2
+  return ((output1, output2), (input1, input2))
+bindAwhileIO InputOutputRunit =
+  return ((), ())
+
+prjVars :: Vars s env t -> Val env -> t
+prjVars TupRunit         _   = ()
+prjVars (TupRpair v1 v2) env = (prjVars v1 env, prjVars v2 env)
+prjVars (TupRsingle var) env = prj (varIdx var) env
+
+
 {-
 import Data.Array.Accelerate.Analysis.Match
 import Data.Array.Accelerate.Array.Unique

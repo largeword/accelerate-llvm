@@ -37,6 +37,7 @@ import LLVM.AST.Type.Representation
 import Data.Array.Accelerate.AST.Environment
 import Data.Array.Accelerate.AST.Var
 import Data.Array.Accelerate.AST.Partitioned
+import Data.Array.Accelerate.Array.Buffer                           ( ScalarArrayDataR, SingleArrayDict(..), singleArrayDict )
 import Data.Array.Accelerate.Representation.Array
 import Data.Array.Accelerate.Representation.Type
 import Data.Array.Accelerate.Error
@@ -156,23 +157,34 @@ getElementPtr
     :: AddrSpace
     -> ScalarType e
     -> IntegralType int
-    -> Operand (Ptr e)
+    -> Operand (Ptr (ScalarArrayDataR e))
     -> Operand int
     -> CodeGen arch (Operand (Ptr e))
-getElementPtr _ SingleScalarType{}   _ arr ix = instr' $ GetElementPtr arr [ix]
+getElementPtr _ (SingleScalarType tp) _ arr ix
+  | SingleArrayDict <- singleArrayDict tp = instr' $ GetElementPtr arr [ix]
 getElementPtr a (VectorScalarType v) i arr ix
   | VectorType n _ <- v
   , IntegralDict   <- integralDict i
+  -- We do not put padding between vector elelemnts. LLVM does do that to
+  -- align the elements, which is an issue for Vectors of a size which isn't
+  -- a power of two. Hence we need to do more work to compute the pointer to a
+  -- Vector. We treat a 'Buffer (Vec n t)' as a 'Ptr t' (as seen in the type
+  -- families ScalarArrayDataR and MarshalArg).
   = if popCount n == 1
-       then instr' $ GetElementPtr arr [ix]
+       then do
+          -- The vector size is a power of two, so there is no difference in
+          -- padding between our and LLVM's semantics. We cast the pointer to a
+          -- pointer of vectors and then perform GetElementPointer on that.
+          arr' <- instr' $ PtrCast ptrVecType arr
+          instr' $ GetElementPtr arr' [ix]
        else do
-          -- Note the initial zero into to the GEP instruction. It is not
-          -- really recommended to use GEP to index into vector elements, but
-          -- is not forcefully disallowed (at this time)
+          -- 
           ix'  <- instr' $ Mul (IntegralNumType i) ix (integral i (fromIntegral n))
-          p'   <- instr' $ GetElementPtr arr [integral i 0, ix']
-          p    <- instr' $ PtrCast (PtrPrimType (ScalarPrimType (VectorScalarType v)) a) p'
+          p'   <- instr' $ GetElementPtr arr [ix']
+          p    <- instr' $ PtrCast ptrVecType p'
           return p
+  where
+    ptrVecType = PtrPrimType (ScalarPrimType (VectorScalarType v)) a
 
 
 -- | A wrapper around the Load instruction, which splits non-power-of-two

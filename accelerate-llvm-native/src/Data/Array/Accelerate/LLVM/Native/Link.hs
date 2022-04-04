@@ -32,29 +32,17 @@ import Data.Array.Accelerate.LLVM.Native.Link.Runtime
 
 import Control.Monad.State
 import Prelude                                                      hiding ( lookup )
-
-{-
-instance Link Native where
-  data ExecutableR Native = NativeR { nativeExecutable :: {-# UNPACK #-} !(Lifetime FunctionTable)
-                                    }
-  linkForTarget = link
-
+import Foreign.Ptr
+import Data.Coerce (coerce)
 
 -- | Link to the generated shared object file, creating function pointers for
 -- every kernel's entry point.
 --
-link :: ObjectR Native -> LLVM Native (ExecutableR Native)
-link (ObjectR uid nms _ so) = do
+link :: ObjectR f -> LLVM Native (Lifetime (FunPtr f))
+link (ObjectR uid nm _ so) = do
   cache <- gets linkCache
-  funs  <- liftIO $ dlsym uid cache (loadSharedObject nms so)
-  return $! NativeR funs
+  fun <- liftIO $ dlsym uid cache (loadSharedObject nm so)
+  return $! castLifetimeFunPtr fun
 
-
--- | Execute some operation with the supplied executable functions
---
-withExecutable :: MonadIO m => ExecutableR Native -> (FunctionTable -> m b) -> m b
-withExecutable NativeR{..} f = do
-  r <- f (unsafeGetValue nativeExecutable)
-  liftIO $ touchLifetime nativeExecutable
-  return r
--}
+castLifetimeFunPtr :: Lifetime (FunPtr f) -> Lifetime (FunPtr g)
+castLifetimeFunPtr = coerce

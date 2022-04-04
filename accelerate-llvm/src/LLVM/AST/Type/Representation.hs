@@ -18,7 +18,7 @@ module LLVM.AST.Type.Representation (
 
   module LLVM.AST.Type.Representation,
   module Data.Array.Accelerate.Type,
-  Ptr,
+  Ptr, Struct(..),
   AddrSpace(..),
 
 ) where
@@ -74,12 +74,14 @@ data Type a where
   VoidType  :: Type ()
   PrimType  :: PrimType a -> Type a
 
+newtype Struct a = Struct a
+
 data PrimType a where
   BoolPrimType    ::                            PrimType Bool
   ScalarPrimType  :: ScalarType a            -> PrimType a          -- scalar value types (things in registers)
   PtrPrimType     :: PrimType a -> AddrSpace -> PrimType (Ptr a)    -- pointers (XXX: volatility?)
   ArrayPrimType   :: Word64 -> ScalarType a  -> PrimType a          -- static arrays
-  StructPrimType  :: Bool -> TupR PrimType l -> PrimType l          -- aggregate structures
+  StructPrimType  :: Bool -> TupR PrimType l -> PrimType (Struct l) -- aggregate structures
   NamedPrimType   :: Label                   -> PrimType a          -- typedef (TODO: add a type witness)
 
 

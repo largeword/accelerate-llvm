@@ -19,13 +19,14 @@ module Data.Array.Accelerate.LLVM.Native.Link.Cache (
 import Data.Array.Accelerate.Debug.Internal                         ( debuggingIsEnabled )
 
 import Data.Array.Accelerate.LLVM.Native.Link.Object
+import Foreign.Ptr
 import qualified Data.Array.Accelerate.LLVM.Link.Cache              as LC
 
 import Control.Monad
 import System.Posix.DynamicLinker
 
 
-type LinkCache = LC.LinkCache FunctionTable ObjectCode
+type LinkCache = LC.LinkCache (FunPtr ()) ObjectCode
 
 new :: IO LinkCache
 new = do

@@ -200,14 +200,10 @@ data Instruction a where
   -- --------------------
 
   -- <http://llvm.org/docs/LangRef.html#extractvalue-instruction>
-  -- ExtractValue is currently restricted to pairs, we might want
-  -- to allow larger structures. It is currently however only used
-  -- for CmpXchg, which returns a pair so we don't need this for
-  -- other structures.
   --
-  ExtractValue    :: ScalarType t
-                  -> PairIdx tup t
-                  -> Operand tup
+  ExtractValue    :: PrimType t
+                  -> TupleIdx tup t
+                  -> Operand (Struct tup)
                   -> Instruction t
 
   -- <http://llvm.org/docs/LangRef.html#insertvalue-instruction>
@@ -226,6 +222,10 @@ data Instruction a where
                   -> Operand (Ptr a)
                   -> Instruction a
 
+  LoadPtr         :: Volatility
+                  -> Operand (Ptr (Ptr a))
+                  -> Instruction (Ptr a)
+
   -- <http://llvm.org/docs/LangRef.html#store-instruction>
   --
   Store           :: Volatility
@@ -238,6 +238,12 @@ data Instruction a where
   GetElementPtr   :: Operand (Ptr a)
                   -> [Operand i]
                   -> Instruction (Ptr a)
+
+  GetStructElementPtr
+                  :: PrimType t
+                  -> Operand (Ptr (Struct a))
+                  -> TupleIdx a t
+                  -> Instruction (Ptr t)
 
   -- <http://llvm.org/docs/LangRef.html#i-fence>
   --
@@ -253,7 +259,7 @@ data Instruction a where
                   -> Operand a                  -- replacement value
                   -> Atomicity                  -- on success
                   -> MemoryOrdering             -- on failure (see docs for restrictions)
-                  -> Instruction (a, PrimBool)  -- should be (a, Bool)
+                  -> Instruction (Struct (a, PrimBool)) -- should be (a, Bool)
 
   -- <http://llvm.org/docs/LangRef.html#atomicrmw-instruction>
   --
@@ -409,10 +415,15 @@ instance Downcast (Instruction a) LLVM.Instruction where
     LNot x                -> LLVM.Xor (downcast x) (LLVM.ConstantOperand (LLVM.Int 1 1)) md
     InsertElement i v x   -> LLVM.InsertElement (downcast v) (downcast x) (constant i) md
     ExtractElement i v    -> LLVM.ExtractElement (downcast v) (constant i) md
-    ExtractValue _ i s    -> extractStruct i (downcast s)
+    ExtractValue _ i s    -> extractStruct i s
     Load _ v p            -> LLVM.Load (downcast v) (downcast p) atomicity alignment md
+    LoadPtr v p           -> LLVM.Load (downcast v) (downcast p) atomicity alignment md
     Store v p x           -> LLVM.Store (downcast v) (downcast p) (downcast x) atomicity alignment md
     GetElementPtr n i     -> LLVM.GetElementPtr inbounds (downcast n) (downcast i) md
+    GetStructElementPtr _ n i -> case typeOf n of
+      PrimType (PtrPrimType (StructPrimType _ tp) _) ->
+                             LLVM.GetElementPtr inbounds (downcast n) [constant (0 :: Int), constant (fromIntegral $ tupleIdxToInt tp i :: Int32)] md
+      _ -> internalError "Struct ptr impossible"
     Fence a               -> LLVM.Fence (downcast a) md
     CmpXchg _ v p x y a m -> cmpXchg (downcast v) (downcast p) (downcast x) (downcast y) (downcast a) (downcast m) md
     AtomicRMW t v f p x a -> atomicRMW (downcast v) (downcast (t,f)) (downcast p) (downcast x) (downcast a) md
@@ -515,12 +526,12 @@ instance Downcast (Instruction a) LLVM.Instruction where
         | signed t  = LLVM.SRem x y md
         | otherwise = LLVM.URem x y md
 
-      extractStruct :: PairIdx s t -> LLVM.Operand -> LLVM.Instruction
-      extractStruct i s = LLVM.ExtractValue s ix md
+      extractStruct :: TupleIdx s t -> Operand (Struct s) -> LLVM.Instruction
+      extractStruct ix s = LLVM.ExtractValue (downcast s) [fromIntegral int] md
         where
-          ix = case i of
-            PairIdxLeft  -> [0]
-            PairIdxRight -> [1]
+          int = case typeOf s of
+            PrimType (StructPrimType _ tuple) -> tupleIdxToInt tuple ix
+            _ -> internalError "Struct impossible"
 
       ext :: BoundedType a -> BoundedType b -> LLVM.Operand -> LLVM.Instruction
       ext a (downcast -> b) x
@@ -621,10 +632,16 @@ instance TypeOf Instruction where
     LNot x                -> typeOf x
     ExtractElement _ x    -> typeOfVec x
     InsertElement _ x _   -> typeOf x
-    ExtractValue t _ _    -> scalar t
+    ExtractValue t _ _    -> PrimType t
     Load t _ _            -> scalar t
+    LoadPtr _ x           -> case typeOf x of
+      PrimType (PtrPrimType t _) -> PrimType t
+      _ -> internalError "Ptr impossible"
     Store{}               -> VoidType
     GetElementPtr x _     -> typeOf x
+    GetStructElementPtr t x _ -> case typeOf x of
+      PrimType (PtrPrimType _ addr) -> PrimType $ PtrPrimType t addr
+      _ -> internalError "Ptr impossible"
     Fence{}               -> VoidType
     CmpXchg t _ _ _ _ _ _ -> PrimType . StructPrimType False $ ScalarPrimType (SingleScalarType (NumSingleType (IntegralNumType t))) `pair` primType
     AtomicRMW _ _ _ _ x _ -> typeOf x
