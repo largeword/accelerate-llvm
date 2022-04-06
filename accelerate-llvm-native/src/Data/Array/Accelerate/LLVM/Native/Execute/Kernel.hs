@@ -57,11 +57,9 @@ callKernel env (NativeKernelMetadata envSize) fun args =
       go cursor (KernelFunBody (NativeKernel _ funLifetime)) ArgsNil
         | cursor == envSize =
           withLifetime funLifetime $ \funPtr -> do
-            let ptr' = castFunPtrToPtr funPtr :: Ptr Int8
-            let ptr'' = plusPtr ptr' 11 :: Ptr Int8
             putStrLn "Starting"
             print (funPtr, envPtr)
-            a <- callKernelPtr (castFunPtr funPtr) nullPtr -- (castPtr envPtr)
+            a <- callKernelPtr (castFunPtr funPtr) (castPtr envPtr)
             putStrLn "Done!"
         | otherwise = internalError "Cursor and size do not match. callKernel and sizeOfEnv might be inconsistent."
       go cursor (KernelFunLam argR fun') (arg :>: args') = do
