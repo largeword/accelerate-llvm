@@ -84,7 +84,7 @@ instance IsKernel NativeKernel where
     funPtr <- link obj
     return $ NativeKernel uid funPtr
     where
-      uid = hashOperation cluster
+      uid = hashOperation cluster args
 
   kernelMetadata kernel = NativeKernelMetadata $ sizeOfEnv kernel
 
