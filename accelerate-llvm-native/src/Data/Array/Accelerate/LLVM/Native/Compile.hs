@@ -121,7 +121,7 @@ compile uid module' = do
   so_file <- liftIO . unsafeInterleaveIO $ do
     force_recomp   <- if Debug.debuggingIsEnabled then Debug.getFlag Debug.force_recomp else return False
     so_file_exists <- doesFileExist sharedObjFile
-    if so_file_exists && not force_recomp
+    if so_file_exists && not force_recomp && False
       then
         Debug.traceM Debug.dump_cc ("cc: found cached shared object " % shown) uid
 
