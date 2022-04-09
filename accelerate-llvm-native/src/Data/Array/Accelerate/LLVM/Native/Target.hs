@@ -38,7 +38,7 @@ import System.IO.Unsafe
 --
 data Native = Native
   { linkCache     :: !LinkCache
-  , workers       :: !Workers
+  , targetWorkers :: !Workers
   }
 
 instance Target Native where

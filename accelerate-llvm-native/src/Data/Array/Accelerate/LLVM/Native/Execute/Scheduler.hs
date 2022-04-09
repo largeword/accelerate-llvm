@@ -17,21 +17,25 @@
 --
 
 module Data.Array.Accelerate.LLVM.Native.Execute.Scheduler (
-
-  Action, Job(..), Workers,
+  Job(..), Workers,
 
   schedule,
-  hireWorkers, hireWorkersOn, retireWorkers, fireWorkers, numWorkers,
+  hireWorkers, hireWorkersOn, numWorkers,
 
+  -- Signals
+  NativeSignal, newSignal, resolveSignal, scheduleAfter, scheduleAfterOrRun
 ) where
 
+import Data.Array.Accelerate.Error
 import qualified Data.Array.Accelerate.LLVM.Native.Debug            as Debug
+import Data.Array.Accelerate.LLVM.Native.Execute.Sleep
 
 import Control.Concurrent
 import Control.Concurrent.Extra
 import Control.DeepSeq
 import Control.Exception
 import Control.Monad
+import Data.Atomics
 import Data.Concurrent.Queue.MichaelScott
 import Data.IORef
 import Data.Int
@@ -45,7 +49,194 @@ import GHC.Base                                                     hiding ( bui
 
 #include "MachDeps.h"
 
+newtype Job = Job (IO ())
 
+data Workers = Workers
+  { workerCount     :: {-# UNPACK #-} Int
+  , workerSleep     :: {-# UNPACK #-} !SleepScope
+  , workerTaskQueue :: {-# UNPACK #-} !(LinkedQueue Job)       -- tasks currently being executed; may be from different jobs
+  }
+
+-- Schedule a job to be executed by the worker threads. May be called
+-- concurrently.
+--
+schedule :: Workers -> Job -> IO ()
+schedule workers job = do
+  pushL (workerTaskQueue workers) job
+  wakeAll $ workerSleep workers
+
+runWorker :: Workers -> IO ()
+runWorker !workers = do
+  job <- dequeue workers
+  runJob job
+  runWorker workers
+
+runJob :: Job -> IO ()
+runJob (Job io) = io
+
+dequeue :: Workers -> IO Job
+dequeue !workers = loop 0
+  where
+    loop :: Int16 -> IO Job
+    loop !retries = do
+      mjob <- tryDequeue workers
+      case mjob of
+        Just job -> return job
+        Nothing
+          | retries < 16 -> loop (retries + 1)
+          | otherwise -> do
+            sleepIf (workerSleep workers) (queueEmpty workers)
+            loop 0
+
+queueEmpty :: Workers -> IO Bool
+queueEmpty !workers =
+  nullQ (workerTaskQueue workers)
+
+tryDequeue :: Workers -> IO (Maybe Job)
+tryDequeue !workers = tryPopR (workerTaskQueue workers)
+
+-- Spawn a new worker thread for each capability
+--
+hireWorkers :: IO Workers
+hireWorkers = do
+  ncpu    <- getNumCapabilities
+  workers <- hireWorkersOn [0 .. ncpu-1]
+  return workers
+
+-- Spawn worker threads on the specified capabilities
+--
+hireWorkersOn :: [Int] -> IO Workers
+hireWorkersOn caps = do
+  sleep <- newSleepScope
+  queue <- newQ
+  let workers = Workers (length caps) sleep queue
+  forM_ caps $ \cpu -> do
+    tid <- forkOn cpu $ do
+            tid <- myThreadId
+            Debug.init_thread
+            withCString (printf "Thread %d" cpu) Debug.set_thread_name
+            runWorker workers
+            {- catch
+              (restore $ runWorker worker)
+              (appendMVar workerException . (tid,)) -}
+    message ("sched: fork Thread " % int % " on capability " % int) (getThreadId tid) cpu
+    return tid
+  return workers
+
+
+-- Number of workers
+--
+numWorkers :: Workers -> Int
+numWorkers = workerCount
+
+
+data WaitingJob = WaitingJob
+  { waitingDependencies :: {-# UNPACK #-} !Atomic
+  , waitingJobJob       :: !Job
+  }
+
+resolveDependency :: Workers -> WaitingJob -> IO ()
+resolveDependency !workers !job = do
+  remaining <- fetchSubAtomic (waitingDependencies job) 1 -- returns old value
+  if remaining == 1 then
+    -- Add job to queue
+    schedule workers (waitingJobJob job)
+  else
+    return ()
+
+resolveJobsDependency :: Workers -> WaitingJobs -> IO ()
+resolveJobsDependency !workers = go
+  where
+    go :: WaitingJobs -> IO ()
+    go WaitingJobsNil = return ()
+    go (WaitingJobsCons j js) = do
+      resolveDependency workers j
+      go js
+
+newtype NativeSignal = NativeSignal (IORef NativeSignalState)
+
+data NativeSignalState
+  = Pending !WaitingJobs
+  | Resolved
+
+newSignal :: IO NativeSignal
+newSignal = NativeSignal <$> newIORef pendingNone
+
+pendingNone :: NativeSignalState
+pendingNone = Pending WaitingJobsNil
+
+data WaitingJobs = WaitingJobsNil | WaitingJobsCons {-# UNPACK #-} !WaitingJob !WaitingJobs
+
+resolveSignal :: Workers -> NativeSignal -> IO ()
+resolveSignal !workers (NativeSignal ioref) = do
+  old <- atomicModifyIORef' ioref (\o -> (Resolved, o))
+  case old of
+    Resolved -> internalError "Signal is resolved twice."
+    Pending jobs -> resolveJobsDependency workers jobs
+
+-- Schedules a job to be executed when the given signals are resolved.
+scheduleAfter :: Workers -> [NativeSignal] -> Job -> IO ()
+scheduleAfter !workers !signals !job = do
+  direct <- scheduleAfterOr signals job
+  if direct then
+    schedule workers job
+  else
+    return ()
+
+-- Similar to 'scheduleAfter', but if all signals are already resolved,
+-- it will directly execute the job instead of scheduling it on the queue.
+scheduleAfterOrRun :: [NativeSignal] -> Job -> IO ()
+scheduleAfterOrRun !signals !job = do
+  direct <- scheduleAfterOr signals job
+  if direct then
+    runJob job
+  else
+    return ()
+
+-- Similar to 'scheduleAfter'. If all signals are already resolved,
+-- it will not schedule the job.
+-- Returns whether all signals were already resolved.
+scheduleAfterOr :: [NativeSignal] -> Job -> IO Bool
+scheduleAfterOr nativeSignals job = do
+  let count = length nativeSignals
+  dependencies <- newAtomic count
+  let
+    waitingJob = WaitingJob dependencies job
+    go :: [NativeSignal] -> Int -> IO Bool
+    go (NativeSignal ioref : signals) resolvedCount = do
+      ticket <- readForCAS ioref
+      try' ticket
+      where
+        try' :: Ticket NativeSignalState -> IO Bool
+        try' ticket = do
+          case peekTicket ticket of
+            -- Signal was already resolved, no need to wait
+            Resolved -> go signals (resolvedCount + 1)
+            -- Signal is still pending. Add this job to the list.
+            Pending other -> do
+              -- Attempt to add this job using CAS
+              (success, newTicket) <- casIORef ioref ticket (Pending (WaitingJobsCons waitingJob other))
+              if success then
+                -- Job is added to the list
+                go signals resolvedCount
+              else
+                -- This thread was interleaved with another operation on the
+                -- Signal, try again with the new value.
+                try' newTicket
+    go [] resolvedCount
+      | count == resolvedCount = return True
+      | resolvedCount == 0 = return False
+      | otherwise = do
+        old <- fetchSubAtomic dependencies resolvedCount
+        -- Note that in a rare situation it might occur that a signal was
+        -- intially unresolved, but resolved at this point. Hence we must check
+        -- whether the counter is now 0
+        return $ old == resolvedCount
+  go nativeSignals 0
+
+
+
+{-
 -- An individual computation is a job consisting of a sequence of actions to be
 -- executed by the worker threads in parallel.
 --
@@ -226,6 +417,7 @@ fireWorkers Workers{..} =
 numWorkers :: Workers -> Int
 numWorkers = workerCount
 
+-}
 
 -- Utility
 -- -------
@@ -241,11 +433,12 @@ newAtomic (I# n#) = IO $ \s0 ->
     (# s2, Atomic mba# #) }}}
 
 {-# INLINE fetchSubAtomic #-}
-fetchSubAtomic :: Atomic -> IO Int
-fetchSubAtomic (Atomic mba#) = IO $ \s0 ->
-  case fetchSubIntArray# mba# 0# 1# s0 of { (# s1, old# #) ->
+fetchSubAtomic :: Atomic -> Int -> IO Int
+fetchSubAtomic (Atomic mba#) (I# i) = IO $ \s0 ->
+  case fetchSubIntArray# mba# 0# i s0 of { (# s1, old# #) ->
     (# s1, I# old# #) }
 
+{-
 {-# INLINE appendMVar #-}
 appendMVar :: MVar (Seq a) -> a -> IO ()
 appendMVar mvar a =
@@ -254,7 +447,7 @@ appendMVar mvar a =
     case ma of
       Nothing -> putMVar mvar (Seq.singleton a)
       Just as -> putMVar mvar (as Seq.|> a)
-
+-}
 
 -- Debug
 -- -----
@@ -262,4 +455,3 @@ appendMVar mvar a =
 {-# INLINE message #-}
 message :: Format (IO ()) a -> a
 message = Debug.traceM Debug.dump_sched
-

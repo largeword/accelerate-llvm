@@ -23,7 +23,6 @@
 
 module Data.Array.Accelerate.LLVM.Native.Execute.Kernel where
 
-import Data.Array.Accelerate.AST.Environment
 import Data.Array.Accelerate.AST.Kernel
 import Data.Array.Accelerate.AST.Schedule.Uniform
 import Data.Array.Accelerate.Array.Buffer
@@ -33,10 +32,9 @@ import Data.Array.Accelerate.Lifetime
 import Data.Array.Accelerate.Error
 import Data.Array.Accelerate.LLVM.CodeGen.Environment       ( MarshalArg, marshalScalarArg )
 import Data.Array.Accelerate.LLVM.Native.Kernel
+import Data.Array.Accelerate.LLVM.Native.Execute.Environment
 import Data.Array.Accelerate.LLVM.Native.Execute.Marshal
 import Data.Primitive.Vec
-
-import Control.Concurrent
 
 import Foreign.Ptr
 import Foreign.Marshal.Alloc
@@ -46,7 +44,7 @@ import Data.Typeable
 foreign import ccall "dynamic"  
   callKernelPtr :: FunPtr (Ptr () -> IO ()) -> Ptr () -> IO ()
 
-callKernel :: forall env f. Val env -> NativeKernelMetadata f -> KernelFun NativeKernel f -> SArgs env f -> IO ()
+callKernel :: forall env f. NativeEnv env -> NativeKernelMetadata f -> KernelFun NativeKernel f -> SArgs env f -> IO ()
 callKernel env (NativeKernelMetadata envSize) fun args =
   -- Allocate memory to store the arguments to the function.
   -- Align by 2 cache lines.
@@ -59,7 +57,7 @@ callKernel env (NativeKernelMetadata envSize) fun args =
           withLifetime funLifetime $ \funPtr -> do
             putStrLn "Starting"
             print (funPtr, envPtr)
-            a <- callKernelPtr (castFunPtr funPtr) (castPtr envPtr)
+            callKernelPtr (castFunPtr funPtr) (castPtr envPtr)
             putStrLn "Done!"
         | otherwise = internalError "Cursor and size do not match. callKernel and sizeOfEnv might be inconsistent."
       go cursor (KernelFunLam argR fun') (arg :>: args') = do
@@ -74,16 +72,16 @@ callKernel env (NativeKernelMetadata envSize) fun args =
 -- Writes the argument to the struct. This function is in the with-resource style,
 -- to ensure that the arguments stay live while executing the kernel.
 --
-withArg :: Val env -> KernelArgR t s -> Ptr (MarshalArg s) -> SArg env t -> IO () -> IO ()
+withArg :: NativeEnv env -> KernelArgR t s -> Ptr (MarshalArg s) -> SArg env t -> IO () -> IO ()
 withArg env (KernelArgRbuffer _ _) ptr (SArgBuffer _ var) action = do
   let Buffer ua = prj (varIdx var) env
   withUniqueArrayPtr ua $ \bufferPtr -> do
     poke ptr bufferPtr
     action
-withArg env (KernelArgRscalar (SingleScalarType tp)) ptr (SArgScalar var) action
+withArg env (KernelArgRscalar tp'@(SingleScalarType tp)) ptr (SArgScalar var) action
   | SingleDict <- singleDict tp
   , Refl <- marshalScalarArg (SingleScalarType tp) = do
-    let value = prj (varIdx var) env
+    let value = prjGroundVar (Var (GroundRscalar tp') (varIdx var)) env
     poke ptr value
     action
 withArg env (KernelArgRscalar (VectorScalarType (VectorType _ (tp :: SingleType u)))) ptr (SArgScalar var) action
