@@ -34,7 +34,7 @@ import Data.Array.Accelerate.LLVM.Compile.Cache
 import Data.Array.Accelerate.LLVM.CodeGen.Base
 import Data.Array.Accelerate.LLVM.CodeGen.Environment hiding ( Empty )
 import Data.Array.Accelerate.LLVM.Native.Operation
-import Data.Array.Accelerate.LLVM.Native.CodeGen.Skeleton
+-- import Data.Array.Accelerate.LLVM.Native.CodeGen.Skeleton
 import Data.Array.Accelerate.LLVM.Native.CodeGen.Base
 import Data.Array.Accelerate.LLVM.Native.CodeGen.Fold
 import Data.Array.Accelerate.LLVM.Native.CodeGen.FoldSeg
