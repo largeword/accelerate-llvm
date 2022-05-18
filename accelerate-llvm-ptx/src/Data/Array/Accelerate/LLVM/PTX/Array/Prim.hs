@@ -34,7 +34,7 @@ module Data.Array.Accelerate.LLVM.PTX.Array.Prim (
 
 ) where
 
-import Data.Array.Accelerate.Array.Data
+import Data.Array.Accelerate.Array.Buffer
 import Data.Array.Accelerate.Array.Unique
 import Data.Array.Accelerate.Error
 import Data.Array.Accelerate.Lifetime                               hiding ( withLifetime )

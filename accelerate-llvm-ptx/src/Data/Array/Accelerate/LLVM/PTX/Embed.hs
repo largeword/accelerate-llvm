@@ -22,8 +22,8 @@ import Data.ByteString.Short.Extra                                  as BS
 
 import Data.Array.Accelerate.Lifetime
 
-import Data.Array.Accelerate.LLVM.Compile
-import Data.Array.Accelerate.LLVM.Embed
+-- import Data.Array.Accelerate.LLVM.Compile
+-- import Data.Array.Accelerate.LLVM.Embed
 
 import Data.Array.Accelerate.LLVM.PTX.Compile
 import Data.Array.Accelerate.LLVM.PTX.Link

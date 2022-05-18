@@ -26,14 +26,14 @@ module Data.Array.Accelerate.LLVM.PTX.Execute.Marshal (
 ) where
 
 import Data.Array.Accelerate.LLVM.State
-import Data.Array.Accelerate.LLVM.Execute.Marshal
+-- import Data.Array.Accelerate.LLVM.Execute.Marshal
 
 import Data.Array.Accelerate.LLVM.PTX.Target
 import Data.Array.Accelerate.LLVM.PTX.Execute.Async
 import qualified Data.Array.Accelerate.LLVM.PTX.Array.Prim      as Prim
 
 import Data.Array.Accelerate.Type
-import Data.Array.Accelerate.Array.Data
+-- import Data.Array.Accelerate.Array.Data
 
 import qualified Foreign.CUDA.Driver                            as CUDA
 

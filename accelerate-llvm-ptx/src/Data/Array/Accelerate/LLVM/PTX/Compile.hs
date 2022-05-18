@@ -23,12 +23,12 @@ module Data.Array.Accelerate.LLVM.PTX.Compile (
 
 import Data.Array.Accelerate.AST                                    ( PreOpenAcc )
 import Data.Array.Accelerate.Error
-import Data.Array.Accelerate.Trafo.Delayed
+-- import Data.Array.Accelerate.Trafo.Delayed
 
-import Data.Array.Accelerate.LLVM.CodeGen
+-- import Data.Array.Accelerate.LLVM.CodeGen
 import Data.Array.Accelerate.LLVM.CodeGen.Environment               ( Gamma )
-import Data.Array.Accelerate.LLVM.CodeGen.Module                    ( Module(..) )
-import Data.Array.Accelerate.LLVM.Compile
+-- import Data.Array.Accelerate.LLVM.CodeGen.Module                    ( Module(..) )
+-- import Data.Array.Accelerate.LLVM.Compile
 import Data.Array.Accelerate.LLVM.Extra
 import Data.Array.Accelerate.LLVM.State
 

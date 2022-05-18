@@ -26,7 +26,7 @@ module Data.Array.Accelerate.LLVM.PTX.Execute.Async (
 import Data.Array.Accelerate.Error
 import Data.Array.Accelerate.Lifetime
 
-import Data.Array.Accelerate.LLVM.Execute.Async
+-- import Data.Array.Accelerate.LLVM.Execute.Async
 import Data.Array.Accelerate.LLVM.State
 
 import Data.Array.Accelerate.LLVM.PTX.Target

@@ -16,7 +16,7 @@ module Data.Array.Accelerate.LLVM.PTX.CodeGen (
 ) where
 
 -- accelerate
-import Data.Array.Accelerate.LLVM.CodeGen
+-- import Data.Array.Accelerate.LLVM.CodeGen
 
 import Data.Array.Accelerate.LLVM.PTX.CodeGen.Base
 import Data.Array.Accelerate.LLVM.PTX.CodeGen.Fold

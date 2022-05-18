@@ -51,6 +51,9 @@ import Data.Typeable
 import LLVM.AST.Type.Representation
 import LLVM.AST.Type.Module
 import LLVM.AST.Type.Function
+import Data.Array.Accelerate.LLVM.CodeGen.Monad
+import qualified LLVM.AST.Type.Function as LLVM
+import LLVM.AST.Type.AddrSpace (defaultAddrSpace)
 
 codegen :: UID -> Env AccessGroundR env -> Cluster NativeOp args -> Args env args -> LLVM Native (Module (KernelType env))
 codegen uid env cluster args = case clusterOperations cluster args of
@@ -62,3 +65,12 @@ codegen uid env cluster args = case clusterOperations cluster args of
     | otherwise
     -> internalError "Cannot compile this operation yet"
   _ -> internalError "Cannot compile this kernel yet"
+
+codegenN :: UID -> Env AccessGroundR env -> Cluster NativeOp args -> Args env args -> LLVM Native (Module (KernelType env))
+codegenN uid env cluster args = case clusterOperations cluster args of
+  ClusterOperations extra lhs operations -> let
+    (envTp, extractEnv, gamma) = bindEnv env
+    in
+    codeGenFunction uid "cluster" (LLVM.Lam (PtrPrimType envTp defaultAddrSpace) "env") $ do
+      extractEnv
+      undefined

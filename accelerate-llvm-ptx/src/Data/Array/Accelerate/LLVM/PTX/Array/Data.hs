@@ -26,7 +26,7 @@ module Data.Array.Accelerate.LLVM.PTX.Array.Data (
 
 ) where
 
-import Data.Array.Accelerate.Array.Data
+import Data.Array.Accelerate.Array.Buffer
 import Data.Array.Accelerate.Array.Unique
 import Data.Array.Accelerate.Error
 import Data.Array.Accelerate.Lifetime
@@ -35,7 +35,7 @@ import Data.Array.Accelerate.Representation.Shape
 import Data.Array.Accelerate.Representation.Type
 import Data.Array.Accelerate.Type
 
-import Data.Array.Accelerate.LLVM.Array.Data
+-- import Data.Array.Accelerate.LLVM.Array.Data
 import Data.Array.Accelerate.LLVM.State
 
 import Data.Array.Accelerate.LLVM.PTX.State

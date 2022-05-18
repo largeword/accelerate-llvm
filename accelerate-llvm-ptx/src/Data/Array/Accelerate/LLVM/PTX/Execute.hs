@@ -34,7 +34,7 @@ import Data.Array.Accelerate.Representation.Shape
 import Data.Array.Accelerate.Representation.Type
 import Data.Array.Accelerate.Type
 
-import Data.Array.Accelerate.LLVM.Execute
+-- import Data.Array.Accelerate.LLVM.Execute
 
 import Data.Array.Accelerate.LLVM.PTX.Analysis.Launch               ( multipleOf )
 import Data.Array.Accelerate.LLVM.PTX.Array.Data

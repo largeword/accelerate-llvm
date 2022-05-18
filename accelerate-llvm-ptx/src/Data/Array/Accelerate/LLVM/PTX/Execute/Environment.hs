@@ -16,7 +16,7 @@ module Data.Array.Accelerate.LLVM.PTX.Execute.Environment (
 ) where
 
 import Data.Array.Accelerate.LLVM.PTX.Target
-import Data.Array.Accelerate.LLVM.Execute.Environment
+-- import Data.Array.Accelerate.LLVM.Execute.Environment
 
 type Val = ValR PTX
 

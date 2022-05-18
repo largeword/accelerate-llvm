@@ -57,9 +57,9 @@ import Data.Array.Accelerate.Error
 import Data.Array.Accelerate.LLVM.CodeGen.Arithmetic                as A
 import Data.Array.Accelerate.LLVM.CodeGen.Base
 import Data.Array.Accelerate.LLVM.CodeGen.IR
-import Data.Array.Accelerate.LLVM.CodeGen.Module
+-- import Data.Array.Accelerate.LLVM.CodeGen.Module
 import Data.Array.Accelerate.LLVM.CodeGen.Monad
-import Data.Array.Accelerate.LLVM.CodeGen.Ptr
+-- import Data.Array.Accelerate.LLVM.CodeGen.Ptr
 import Data.Array.Accelerate.LLVM.CodeGen.Sugar
 import Data.Array.Accelerate.LLVM.Compile.Cache
 import Data.Array.Accelerate.LLVM.PTX.Analysis.Launch
@@ -107,6 +107,7 @@ import GHC.TypeLits
 #if MIN_VERSION_llvm_hs(10,0,0)
 import qualified LLVM.AST.Type.Instruction.RMW                      as RMW
 import LLVM.AST.Type.Instruction.Atomic
+import Data.Array.Accelerate (KernelMetadata)
 #elif !MIN_VERSION_llvm_hs(9,0,0)
 import Data.String
 import Text.Printf

@@ -88,14 +88,14 @@ module Data.Array.Accelerate.LLVM.PTX (
 
 import Data.Array.Accelerate.AST                                    ( PreOpenAfun(..), arraysR, liftALeftHandSide )
 import Data.Array.Accelerate.AST.LeftHandSide                       ( lhsToTupR )
-import Data.Array.Accelerate.Array.Data
+import Data.Array.Accelerate.Array.Buffer
 import Data.Array.Accelerate.Async                                  ( Async, asyncBound, wait, poll, cancel )
 import Data.Array.Accelerate.Error
 import Data.Array.Accelerate.Representation.Array                   ( liftArraysR )
 import Data.Array.Accelerate.Smart                                  ( Acc )
 import Data.Array.Accelerate.Sugar.Array                            ( Arrays, toArr, fromArr, ArraysR )
 import Data.Array.Accelerate.Trafo
-import Data.Array.Accelerate.Trafo.Delayed
+-- import Data.Array.Accelerate.Trafo.Delayed
 import Data.Array.Accelerate.Trafo.Sharing                          ( Afunction(..), AfunctionRepr(..), afunctionRepr )
 import qualified Data.Array.Accelerate.Sugar.Array                  as Sugar
 

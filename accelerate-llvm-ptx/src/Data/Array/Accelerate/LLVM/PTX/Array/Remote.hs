@@ -28,7 +28,7 @@ import Data.Array.Accelerate.LLVM.PTX.Target
 import {-# SOURCE #-} Data.Array.Accelerate.LLVM.PTX.Execute.Event
 import {-# SOURCE #-} Data.Array.Accelerate.LLVM.PTX.Execute.Stream
 
-import Data.Array.Accelerate.Array.Data
+import Data.Array.Accelerate.Array.Buffer
 import Data.Array.Accelerate.Array.Unique
 import Data.Array.Accelerate.Lifetime
 import Data.Array.Accelerate.Representation.Elt
@@ -109,7 +109,7 @@ instance Remote.RemoteMemory (LLVM PTX) where
 {-# INLINEABLE malloc #-}
 malloc
     :: SingleType e
-    -> ArrayData e
+    -> MutableBuffer e
     -> Int
     -> Bool
     -> LLVM PTX Bool
@@ -123,7 +123,7 @@ malloc !tp !ad !n !frozen = do
 {-# INLINEABLE withRemote #-}
 withRemote
     :: SingleType e
-    -> ArrayData e
+    -> MutableBuffer e
     -> (CUDA.DevicePtr (ScalarArrayDataR e) -> LLVM PTX (Maybe Event, r))
     -> LLVM PTX (Maybe r)
 withRemote !tp !ad !f = do

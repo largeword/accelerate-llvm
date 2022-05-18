@@ -6,11 +6,11 @@ cradle:
     - path: "accelerate-llvm-native/src"
       component: "accelerate-llvm-native:lib"
 
-    - path: "accelerate-llvm-native/test/nofib"
-      component: "accelerate-llvm-native:test:nofib-llvm-native"
+    # - path: "accelerate-llvm-native/test/nofib"
+    #   component: "accelerate-llvm-native:test:nofib-llvm-native"
 
-    # - path: "accelerate-llvm-ptx/src"
-    #   component: "accelerate-llvm-ptx:lib"
+    - path: "accelerate-llvm-ptx/src"
+      component: "accelerate-llvm-ptx:lib"
 
     # - path: "accelerate-llvm-ptx/test/nofib"
     #   component: "accelerate-llvm-ptx:test:nofib-llvm-ptx"

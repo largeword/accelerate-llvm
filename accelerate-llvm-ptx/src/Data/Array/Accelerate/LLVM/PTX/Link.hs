@@ -23,7 +23,7 @@ module Data.Array.Accelerate.LLVM.PTX.Link (
 
 import Data.Array.Accelerate.Lifetime
 
-import Data.Array.Accelerate.LLVM.Link
+-- import Data.Array.Accelerate.LLVM.Link
 import Data.Array.Accelerate.LLVM.State
 
 import Data.Array.Accelerate.LLVM.PTX.Analysis.Launch
