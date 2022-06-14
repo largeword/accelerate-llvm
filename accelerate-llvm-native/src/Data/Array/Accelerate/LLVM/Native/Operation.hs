@@ -4,6 +4,8 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TemplateHaskell   #-}
 {-# LANGUAGE TypeFamilies      #-}
+{-# LANGUAGE InstanceSigs #-}
+{-# LANGUAGE StandaloneDeriving #-}
 
 -- |
 -- Module      : Data.Array.Accelerate.LLVM.Native.Accelerate
@@ -15,9 +17,8 @@
 -- Portability : non-portable (GHC extensions)
 --
 
-module Data.Array.Accelerate.LLVM.Native.Operation (
-  NativeOp(..)
-) where
+module Data.Array.Accelerate.LLVM.Native.Operation 
+  where
 
 -- accelerate
 
@@ -28,9 +29,13 @@ import Data.Array.Accelerate.Analysis.Hash.Operation
 import Data.Array.Accelerate.Backend
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels
+import Data.Array.Accelerate.Eval
+
 
 import Data.Set (Set)
 import qualified Data.Set as Set
+import Data.Array.Accelerate.AST.Partitioned (OutArgsOf)
+import Data.Array.Accelerate.AST.Environment (Val)
 
 
 data NativeOp op where
@@ -105,3 +110,28 @@ instance NFData' (BackendClusterArg NativeOp) where
 instance ShrinkArg (BackendClusterArg NativeOp) where
   shrinkArg _ None = None
   deadArg None = None
+
+deriving instance Eq (BackendClusterArg2 NativeOp env arg)
+
+instance StaticClusterAnalysis NativeOp where
+  -- TODO backpermute stuff, this is just a silly useless instance
+  data BackendClusterArg2 NativeOp env arg = NOTHING
+  def _ _ _ = NOTHING
+  valueToIn    NOTHING = NOTHING
+  valueToOut   NOTHING = NOTHING
+  inToValue    NOTHING = NOTHING
+  outToValue   NOTHING = NOTHING
+  outToSh      NOTHING = NOTHING
+  shToOut      NOTHING = NOTHING
+  shToValue    NOTHING = NOTHING
+  varToValue   NOTHING = NOTHING
+  varToSh      NOTHING = NOTHING
+  shToVar      NOTHING = NOTHING
+  shrinkOrGrow NOTHING = NOTHING
+  addTup       NOTHING = NOTHING
+  justUnit = NOTHING
+  onOp _ _ args _ = go args
+    where
+      go :: Args env args -> BackendArgs NativeOp env args
+      go ArgsNil = ArgsNil
+      go (_ :>: as) =  NOTHING :>: go as

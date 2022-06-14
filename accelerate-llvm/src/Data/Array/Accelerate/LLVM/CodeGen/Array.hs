@@ -20,6 +20,7 @@ module Data.Array.Accelerate.LLVM.CodeGen.Array (
   writeArray,
   writeArrayFused,
   readBuffer,
+  writeBuffer
 
 ) where
 
