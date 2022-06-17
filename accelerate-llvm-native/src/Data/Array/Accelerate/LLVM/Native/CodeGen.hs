@@ -1,10 +1,14 @@
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 {-# LANGUAGE GADTs             #-}
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE ViewPatterns #-}
+{-# LANGUAGE TupleSections #-}
 
 -- |
 -- Module      : Data.Array.Accelerate.LLVM.Native.CodeGen
@@ -18,7 +22,7 @@
 
 module Data.Array.Accelerate.LLVM.Native.CodeGen (
   codegen
-) where
+  ) where
 
 -- accelerate
 import Data.Array.Accelerate.Representation.Array
@@ -63,54 +67,85 @@ import Data.Array.Accelerate.LLVM.CodeGen.IR (Operands (..), IROP (..))
 import Unsafe.Coerce (unsafeCoerce)
 import Data.Array.Accelerate.LLVM.CodeGen.Sugar (app1)
 import Data.Array.Accelerate.LLVM.CodeGen.Exp (llvmOfFun1)
+import Data.Array.Accelerate.Trafo.Desugar (ArrayDescriptor(..))
+import Data.Array.Accelerate.LLVM.CodeGen.Arithmetic (ifThenElse, isJust)
+import Control.Monad (when, join)
+import LLVM.AST.Type.Name
+import Data.Array.Accelerate.LLVM.Native.CodeGen.Loop
+import Data.Array.Accelerate.LLVM.CodeGen.Constant (constant)
 
-codegen :: UID -> Env AccessGroundR env -> Cluster NativeOp args -> Args env args -> LLVM Native (Module (KernelType env))
-codegen uid env cluster args = case clusterOperations cluster args of
-  ClusterOperations _ lhs [ApplyOperation operation args]
-    | Just Refl <- leftHandSideIsVoid lhs
-    , NGenerate <- operation
-    , argF :>: argOut@(ArgArray _ (ArrayR shr _) sh _) :>: ArgsNil <- args
-    -> mkGenerate uid "generate" env argOut argF
-    | otherwise
-    -> internalError "Cannot compile this operation yet"
-  _ -> internalError "Cannot compile this kernel yet"
+-- codegen :: UID -> Env AccessGroundR env -> Cluster NativeOp args -> Args env args -> LLVM Native (Module (KernelType env))
+-- codegen uid env cluster args = case clusterOperations cluster args of
+--   ClusterOperations _ lhs [ApplyOperation operation args]
+--     | Just Refl <- leftHandSideIsVoid lhs
+--     , NGenerate <- operation
+--     , argF :>: argOut@(ArgArray _ (ArrayR shr _) sh _) :>: ArgsNil <- args
+--     -> mkGenerate uid "generate" env argOut argF
+--     | otherwise
+--     -> internalError "Cannot compile this operation yet"
+--   _ -> internalError "Cannot compile this kernel yet"
 
-codegenN :: UID -> Env AccessGroundR env -> Cluster NativeOp args -> Args env args -> LLVM Native (Module (KernelType env))
-codegenN uid env cluster args = case clusterOperations cluster args of
-  ClusterOperations extra lhs operations -> let
-    -- the type, code and gamma for the array-level environment
-    (envTp, extractEnv, gamma) = bindEnv env
-    in
-    codeGenFunction uid "cluster" (LLVM.Lam (PtrPrimType envTp defaultAddrSpace) "env") $ do
-      extractEnv
+-- codegenN :: UID -> Env AccessGroundR env -> Cluster NativeOp args -> Args env args -> LLVM Native (Module (KernelType env))
+-- codegenN uid env cluster args = case clusterOperations cluster args of
+--   ClusterOperations extra lhs operations -> let
+--     -- the type, code and gamma for the array-level environment
+--     (envTp, extractEnv, gamma) = bindEnv env
+--     in
+--     codeGenFunction uid "cluster" (LLVM.Lam (PtrPrimType envTp defaultAddrSpace) "env") $ do
+--       extractEnv
 
-      -- TODO: declare the vertically fused variables
-      undefined extra lhs gamma
+--       -- TODO: declare the vertically fused variables
+--       undefined extra lhs gamma
 
-      -- TODO: read from input buffers, making a version of 
-      undefined operations gamma
+--       -- TODO: read from input buffers, making a version of 
+--       undefined operations gamma
 
-      -- TODO: generate code bodies
-      sequence_ $ undefined <$> operations
+--       -- TODO: generate code bodies
+--       sequence_ $ undefined <$> operations
 
-      -- TODO: write outputs
-      undefined operations
+--       -- TODO: write outputs
+--       undefined operations
 
-codegenEval :: Cluster NativeOp args
+codegen = codegenEval
+
+codegenEval :: UID 
+            -> Env AccessGroundR env
+            -> Cluster NativeOp args
             -> Args env args
-            -> Gamma env
-            -> CodeGen Native ()
-codegenEval c = evalCluster loopheader c
+            -> LLVM Native (Module (KernelType env))
+codegenEval uid env c args = loopheader $ evalCluster c args gamma
   where
-    -- inspect the cluster and decide what the loopy structure around this loopbody should be,
-    -- i.e. the number of dimension (nested loops) and bounds
-    loopheader loopbody = _ c
+    (envTp, extractEnv, gamma) = bindEnv env
+    loopheader loopbody = codeGenFunction uid "name_of_a_fused_cluster" (LLVM.Lam (PtrPrimType envTp defaultAddrSpace) "env") $
+      do
+        extractEnv
+        loopsize c gamma args $ \(shr, sh) ->
+          imapNestFromTo shr (constant (shapeType shr) (empty shr)) sh sh $ \ix i -> loopbody (i, multidim' shr ix)
 
+-- inspect the cluster and decide what the loopy structure around this loopbody should be,
+-- i.e. the number of dimension (nested loops) and bounds. Might need to give this access to
+-- the static cluster info later, but hopefully just the 'BackendCluster' is enough.
+-- For now, this simply finds an Input or Output and uses its shape. When we add backpermute, need to rethink this function.
+-- This function also fails for the specific case of a vertically fused generate into permute: That cluster has no inputs nor outputs,
+-- but the vertically fused away array does need to be fully computed. This gets solved automatically when we add backpermutes and pick any in-order argument
+loopsize :: forall env args r. Cluster NativeOp args -> Gamma env -> Args env args -> (forall sh. (ShapeR sh, Operands sh) -> r) -> r
+loopsize (Cluster _ (Cluster' io _)) gamma args k = go io args
+  where
+    go :: ClusterIO a i o -> Args env a -> r
+    go Empty                  ArgsNil                              = k (ShapeRz, OP_Unit)
+    go (Input _)            (ArgArray _ (ArrayR shr _) sh _ :>: _) = k (shr, aprjParameters (unsafeToExpVars sh) gamma)
+    go (Output{}) (ArgArray _ (ArrayR shr _) sh _ :>: _)           = k (shr, aprjParameters (unsafeToExpVars sh) gamma)
+    go (Trivial _)          (ArgArray _ (ArrayR shr _) sh _ :>: _) = k (shr, aprjParameters (unsafeToExpVars sh) gamma)
+    go (Vertical _ (ArrayR shr _) _) (ArgVar sh :>: _)             = k (shr, aprjParameters                  sh  gamma)
+    go (MutPut io')           (_ :>: args') = go io' args'
+    go (ExpPut io')           (_ :>: args') = go io' args'
+    go (VarPut io')           (_ :>: args') = go io' args'
+    go (FunPut io')           (_ :>: args') = go io' args'
 
 
 instance EvalOp NativeOp where
   type EvalMonad NativeOp = CodeGen Native
-  type Index NativeOp = Operands Int
+  type Index NativeOp = (Operands Int, [Operands Int]) -- linear and multidim index. The second one has 'trust me, this is the right shape' levels of type safety, but trust me. It is the right shape.
   type Embed' NativeOp = Operands
   type EnvF NativeOp = GroundOperand
 
@@ -122,19 +157,31 @@ instance EvalOp NativeOp where
   subtup SubTupRkeep x = x
   subtup (SubTupRpair a b) (OP_Pair x y) = OP_Pair (subtup @NativeOp a x) (subtup @NativeOp b y)
 
-  -- the backendarg2 is superfluous in readInput
-  -- the scalartypes guarantee that there is always only one buffer. Same for the unsafeCoerce!
-  writeOutput tp ~(TupRsingle buf) gamma i x = writeBuffer tp TypeInt (aprjBuffer (unsafeCoerce buf) gamma) (op TypeInt i) (op tp x)
-  readInput tp ~(TupRsingle buf) gamma _ i = ir tp <$> readBuffer tp TypeInt (aprjBuffer (unsafeCoerce buf) gamma) (op TypeInt i)
+  -- the scalartypes guarantee that there is always only one buffer. Same for the unsafeCoerce from (Buffers e) to (Buffer e)
+  writeOutput tp ~(TupRsingle buf) gamma (i,_) x = writeBuffer tp TypeInt (aprjBuffer (unsafeCoerce buf) gamma) (op TypeInt i) (op tp x)
+  readInput tp ~(TupRsingle buf) gamma _ (i,_) = ir tp <$> readBuffer tp TypeInt (aprjBuffer (unsafeCoerce buf) gamma) (op TypeInt i)
 
   evalOp i NMap gamma (Push (Push (Push Env.Empty (BAE _ NOTHING)) (BAE (Value' x (Shape' shr sh)) NOTHING)) (BAE f NOTHING)) 
     = Push Env.Empty . FromArg . flip Value' (Shape' shr sh) <$> app1 (llvmOfFun1 @Native f gamma) x
   evalOp i NBackpermute gamma x = error "todo"
   evalOp i NGenerate gamma (Push (Push Env.Empty (BAE (Shape' shr sh) NOTHING)) (BAE f NOTHING))
-    -- TODO: given linear index and total shape, compute multidimensional index. 
-    -- Alternatively, change index structure to something else instead of Operands Int, to allow nested loops and thus fewer index computations
-    = Push Env.Empty . FromArg . flip Value' (Shape' shr sh) <$> app1 (llvmOfFun1 @Native f gamma) (_ i sh) 
-  evalOp i NPermute gamma x = _
+    = Push Env.Empty . FromArg . flip Value' (Shape' shr sh) <$> app1 (llvmOfFun1 @Native f gamma) (multidim shr $ snd i) 
+  evalOp i NPermute gamma (Push (Push (Push (Push Env.Empty (BAE (Value' x (Shape' shrx shx))           NOTHING)) -- input
+                                                            (BAE (flip (llvmOfFun1 @Native) gamma -> f) NOTHING)) -- index function
+                                                            (BAE (ArrayDescriptor shrt sht buft)        NOTHING)) -- target
+                                                            (BAE (flip (llvmOfFun1 @Native) gamma -> c) NOTHING)) -- combination function
+    -- TODO: The type of NPermute is wrong, because it currently doesn't get the input index. 
+    -- Also, should probably change OutArgs to not include Mut.
+    = error "todo"
+
+multidim :: ShapeR sh -> [Operands Int] -> Operands sh
+multidim ShapeRz [] = OP_Unit
+multidim (ShapeRsnoc shr) (i:is) = OP_Pair (multidim shr is) i
+multidim _ _ = error "shouldn't have trusted me"
+
+multidim' :: ShapeR sh -> Operands sh -> [Operands Int]
+multidim' ShapeRz OP_Unit = []
+multidim' (ShapeRsnoc shr) (OP_Pair sh i) = i : multidim' shr sh
 
 instance TupRmonoid Operands where
   pair' = OP_Pair
