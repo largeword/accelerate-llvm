@@ -17,9 +17,10 @@ module Data.Array.Accelerate.LLVM.Native.CodeGen.Loop
 
 -- accelerate
 import Data.Array.Accelerate.Representation.Type
-import Data.Array.Accelerate.Representation.Shape
+import Data.Array.Accelerate.Representation.Shape                   hiding ( eq )
 
-import Data.Array.Accelerate.LLVM.CodeGen.Arithmetic
+import Data.Array.Accelerate.LLVM.CodeGen.Arithmetic                as A
+import Data.Array.Accelerate.LLVM.CodeGen.Constant
 import Data.Array.Accelerate.LLVM.CodeGen.Exp
 import Data.Array.Accelerate.LLVM.CodeGen.IR
 import Data.Array.Accelerate.LLVM.CodeGen.Monad
@@ -27,6 +28,12 @@ import qualified Data.Array.Accelerate.LLVM.CodeGen.Loop            as Loop
 
 import Data.Array.Accelerate.LLVM.Native.Target                     ( Native )
 
+import LLVM.AST.Type.Representation
+import LLVM.AST.Type.Operand
+import LLVM.AST.Type.Instruction
+import LLVM.AST.Type.Instruction.Atomic
+import LLVM.AST.Type.Instruction.Volatile
+import qualified LLVM.AST.Type.Instruction.RMW as RMW
 
 -- | A standard 'for' loop, that steps from the start to end index executing the
 -- given function at each index.
@@ -158,3 +165,111 @@ iterFromTo
 iterFromTo tp start end seed body =
   Loop.iterFromStepTo tp start (liftInt 1) end seed body
 
+workstealLoop
+    :: Operand (Ptr Int32)
+    -> Operand (Ptr Int32)
+    -> Operand Int32
+    -> (Operand Int32 -> CodeGen Native ())
+    -> CodeGen Native ()
+workstealLoop counter activeThreads size doWork = do
+  start    <- newBlock "worksteal.start"
+  claim    <- newBlock "worksteal.loop.claim"
+  work     <- newBlock "worksteal.loop.work"
+  exit     <- newBlock "worksteal.exit"
+  exitLast <- newBlock "worksteal.exit.last"
+  finished <- newBlock "worksteal.finished"
+
+  -- Check whether there might be work for us
+  initialCounter <- instr' $ Load scalarType NonVolatile counter
+  initialCondition <- lt singleType (OP_Int32 initialCounter) (OP_Int32 size)
+  cbr initialCondition start finished
+
+  setBlock start
+  -- Might be work for us!
+  -- First mark that this thread is doing work.
+  atomicAdd Acquire activeThreads (integral TypeInt32 1)
+  br claim
+
+  setBlock claim
+  index <- atomicAdd Unordered counter (integral TypeInt32 1)
+  condition <- lt singleType (OP_Int32 index) (OP_Int32 size)
+  cbr condition work exit
+
+  setBlock work
+  doWork index
+  br claim
+
+  setBlock exit
+  -- Decrement activeThreads
+  remaining <- atomicAdd Release activeThreads (integral TypeInt32 (-1))
+  -- If 'activeThreads' was 1 (now 0), then all work is definitely done.
+  -- Note that there may be multiple threads returning true here.
+  -- It is guaranteed that at least one thread returns true.
+  allDone <- eq singleType (OP_Int32 remaining) (liftInt32 1)
+  retval_ $ op BoolPrimType allDone
+
+  setBlock finished
+  -- Work was already finished
+  retval_ $ boolean False
+
+workstealChunked :: ShapeR sh -> Operand (Ptr Int32) -> Operand (Ptr Int32) -> Operands sh -> (Operands sh -> Operands Int -> CodeGen Native ()) -> CodeGen Native ()
+workstealChunked shr counter activeThreads sh doWork = do
+  let chunkSz = chunkSize shr
+  chunkCounts <- chunkCount shr sh chunkSz
+  chunkCnt <- shapeSize shr chunkCounts
+  chunkCnt' :: Operand Int32 <- instr' $ Trunc boundedType boundedType $ op TypeInt chunkCnt
+
+  workstealLoop counter activeThreads chunkCnt' $ \chunkLinearIndex -> do
+    chunkLinearIndex' <- instr' $ Ext boundedType boundedType chunkLinearIndex
+    chunkIndex <- indexOfInt shr chunkCounts (OP_Int chunkLinearIndex')
+    start <- chunkStart shr chunkSz chunkIndex
+    end <- chunkEnd shr sh chunkSz start
+
+    imapNestFromTo shr start end sh doWork
+
+chunkSize :: ShapeR sh -> sh
+chunkSize ShapeRz = ()
+chunkSize (ShapeRsnoc ShapeRz) = ((), 2048)
+chunkSize (ShapeRsnoc (ShapeRsnoc ShapeRz)) = (((), 64), 64)
+chunkSize (ShapeRsnoc (ShapeRsnoc (ShapeRsnoc ShapeRz))) = ((((), 16), 16), 32)
+chunkSize (ShapeRsnoc (ShapeRsnoc (ShapeRsnoc (ShapeRsnoc sh)))) = ((((go sh, 8), 8), 16), 16)
+  where
+    go :: ShapeR sh' -> sh'
+    go ShapeRz = ()
+    go (ShapeRsnoc sh') = (go sh', 1)
+
+chunkCount :: ShapeR sh -> Operands sh -> sh -> CodeGen Native (Operands sh)
+chunkCount ShapeRz OP_Unit () = return OP_Unit
+chunkCount (ShapeRsnoc shr) (OP_Pair sh sz) (chunkSh, chunkSz) = do
+  counts <- chunkCount shr sh chunkSh
+  
+  -- Compute ceil(sz / chunkSz), as
+  -- (sz + chunkSz - 1) `quot` chunkSz
+  sz' <- add numType sz (liftInt $ chunkSz - 1)
+  count <- A.quot TypeInt sz' $ liftInt chunkSz
+
+  return $ OP_Pair counts count
+
+chunkStart :: ShapeR sh -> sh -> Operands sh -> CodeGen Native (Operands sh)
+chunkStart ShapeRz () OP_Unit = return OP_Unit
+chunkStart (ShapeRsnoc shr) (chunkSh, chunkSz) (OP_Pair sh sz) = do
+  ixs <- chunkStart shr chunkSh sh
+  ix <- mul numType sz $ liftInt chunkSz
+  return $ OP_Pair ixs ix
+
+chunkEnd
+  :: ShapeR sh
+  -> Operands sh -- Array sizee
+  -> sh          -- Chunk size
+  -> Operands sh -- Chunk start
+  -> CodeGen Native (Operands sh) -- Chunk end
+chunkEnd ShapeRz OP_Unit () OP_Unit = return OP_Unit
+chunkEnd (ShapeRsnoc shr) (OP_Pair sh0 sz0) (sh1, sz1) (OP_Pair sh2 sz2) = do
+  sh3 <- chunkStart shr sh1 sh2
+  sz3 <- add numType sz2 $ liftInt sz1
+  sz3' <- A.min singleType sz3 sz0
+  return $ OP_Pair sh3 sz3'
+
+atomicAdd :: MemoryOrdering -> Operand (Ptr Int32) -> Operand Int32 -> CodeGen Native (Operand Int32)
+atomicAdd ordering ptr increment = do
+  instr' $ AtomicRMW numType NonVolatile RMW.Add ptr increment (CrossThread, ordering)

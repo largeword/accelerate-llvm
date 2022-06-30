@@ -86,7 +86,7 @@ values workers (TupRsingle tp)  v        = case tp of
   BaseRsignalResolver
     | SignalResolver mvar <- v -> unsafePerformIO $ do
       signal <- newSignal
-      scheduleAfter workers [signal] $ Job $ putMVar mvar ()
+      scheduleAfter workers [signal] $ Job $ \_ -> putMVar mvar ()
       return $ ValuesSingle $ Value signal
 
 -- For ground types, 'Value t ~ t'

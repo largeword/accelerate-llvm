@@ -1,10 +1,13 @@
+{-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE BangPatterns        #-}
 {-# LANGUAGE CPP                 #-}
+{-# LANGUAGE GADTs               #-}
 {-# LANGUAGE MagicHash           #-}
 {-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE RecordWildCards     #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections       #-}
+{-# LANGUAGE TypeApplications    #-}
 {-# LANGUAGE UnboxedTuples       #-}
 -- |
 -- Module      : Data.Array.Accelerate.LLVM.Native.Execute.Scheduler
@@ -17,25 +20,36 @@
 --
 
 module Data.Array.Accelerate.LLVM.Native.Execute.Scheduler (
-  Job(..), Workers,
+  Job(..), ThreadIdx, Workers,
 
   schedule,
   hireWorkers, hireWorkersOn, numWorkers,
+  defaultWorkers,
+  
+  runJob,
+
+  executeKernel,
 
   -- Signals
   NativeSignal, newSignal, resolveSignal, scheduleAfter, scheduleAfterOrRun
 ) where
 
 import Data.Array.Accelerate.Error
+import Data.Array.Accelerate.Lifetime
 import qualified Data.Array.Accelerate.LLVM.Native.Debug            as Debug
+import Data.Array.Accelerate.LLVM.Native.Kernel
 import Data.Array.Accelerate.LLVM.Native.Execute.Sleep
+import Data.Array.Accelerate.LLVM.Native.Execute.Kernel
 
 import Control.Concurrent
 import Control.Concurrent.Extra
 import Control.DeepSeq
 import Control.Exception
 import Control.Monad
+import System.IO.Unsafe
+import Data.Proxy
 import Data.Atomics
+import Data.Primitive.Array
 import Data.Concurrent.Queue.MichaelScott
 import Data.IORef
 import Data.Int
@@ -44,18 +58,41 @@ import Formatting
 import Foreign.C.String
 import Text.Printf
 import qualified Data.Sequence                                      as Seq
+import Foreign.Ptr
+import Foreign.ForeignPtr
 
 import GHC.Base                                                     hiding ( build )
 
 #include "MachDeps.h"
 
-newtype Job = Job (IO ())
+newtype Job = Job { runJob :: ThreadIdx -> IO () }
 
 data Workers = Workers
-  { workerCount     :: {-# UNPACK #-} Int
-  , workerSleep     :: {-# UNPACK #-} !SleepScope
-  , workerTaskQueue :: {-# UNPACK #-} !(LinkedQueue Job)       -- tasks currently being executed; may be from different jobs
+  -- Number of worker threads
+  { workerCount       :: {-# UNPACK #-} Int
+  -- Sleep scope, to wake threads when new work becomes available
+  , workerSleep       :: {-# UNPACK #-} !SleepScope
+  -- Tasks currently waiting to be executed; may be from different jobs
+  , workerTaskQueue   :: {-# UNPACK #-} !(LinkedQueue Job)
+  -- Array of activities, containing for each thread, the activity it's currently performing.
+  -- The array only contains own activities. If a thread helps the activity of another thread, then it
+  -- won't duplicate that activity into this array.
+  -- TODO: Should we add padding in this array to place each element in a different cache line?
+  , workerActivity    :: {-# UNPACK #-} !(MutableArray RealWorld Activity)
   }
+
+data Activity where
+  Inactive :: Activity
+  Active
+    -- Kernel currently being executed:
+    :: {-# UNPACK #-} !(Proxy env)
+    -> !(FunPtr (KernelType env)) -- Function
+    -> !(ForeignPtr ()) -- Arguments struct
+    -- Continuation, to be executed after this kernel:
+    -> !Job
+    -> Activity
+
+type ThreadIdx = Int
 
 -- Schedule a job to be executed by the worker threads. May be called
 -- concurrently.
@@ -65,14 +102,11 @@ schedule workers job = do
   pushL (workerTaskQueue workers) job
   wakeAll $ workerSleep workers
 
-runWorker :: Workers -> IO ()
-runWorker !workers = do
+runWorker :: Workers -> ThreadIdx -> IO ()
+runWorker !workers !threadIdx = do
   job <- dequeue workers
-  runJob job
-  runWorker workers
-
-runJob :: Job -> IO ()
-runJob (Job io) = io
+  runJob job threadIdx
+  runWorker workers threadIdx
 
 dequeue :: Workers -> IO Job
 dequeue !workers = loop 0
@@ -109,13 +143,15 @@ hireWorkersOn :: [Int] -> IO Workers
 hireWorkersOn caps = do
   sleep <- newSleepScope
   queue <- newQ
-  let workers = Workers (length caps) sleep queue
+  let count = length caps
+  activities <- newArray count Inactive
+  let workers = Workers count sleep queue activities
   forM_ caps $ \cpu -> do
     tid <- forkOn cpu $ do
             tid <- myThreadId
             Debug.init_thread
             withCString (printf "Thread %d" cpu) Debug.set_thread_name
-            runWorker workers
+            runWorker workers cpu
             {- catch
               (restore $ runWorker worker)
               (appendMVar workerException . (tid,)) -}
@@ -123,6 +159,9 @@ hireWorkersOn caps = do
     return tid
   return workers
 
+{-# NOINLINE defaultWorkers #-}
+defaultWorkers :: Workers
+defaultWorkers = unsafePerformIO hireWorkers
 
 -- Number of workers
 --
@@ -174,6 +213,32 @@ resolveSignal !workers (NativeSignal ioref) = do
     Resolved -> internalError "Signal is resolved twice."
     Pending jobs -> resolveJobsDependency workers jobs
 
+-- Executes a kernel.
+-- Registers it in 'workerActivity' such that other workers can assist on this kernel.
+--
+-- Assumes that 'workerActivity !! myIdx' is Inactive (ie this thread is
+-- currently not in a kernel).
+--
+executeKernel :: forall env. Workers -> ThreadIdx -> KernelCall env -> Job -> IO ()
+executeKernel !workers !myIdx (KernelCall fun arg) continuation = do
+  writeArray (workerActivity workers) myIdx $ Active @env Proxy fun arg continuation
+  void $ helpKernel workers myIdx myIdx (return ())
+
+helpKernel :: Workers -> ThreadIdx -> ThreadIdx -> IO () -> IO ()
+helpKernel !workers !myIdx !otherIdx !whenInactive = do
+  ticket <- readArrayElem (workerActivity workers) otherIdx
+  case peekTicket ticket of
+    Inactive -> whenInactive
+    Active (Proxy :: Proxy env) fun arg continuation -> do
+      finished <- callKernel @env fun arg
+      when finished $ do
+        -- All the work is finished. There might be multiple thread that get
+        -- 'True' here. We choose one thread of them, by doing compare-and-swap
+        -- and seeing for which thread that succeeded.
+        --
+        (last, _) <- casArrayElem (workerActivity workers) otherIdx ticket Inactive
+        when last (runJob continuation myIdx)
+
 -- Schedules a job to be executed when the given signals are resolved.
 scheduleAfter :: Workers -> [NativeSignal] -> Job -> IO ()
 scheduleAfter !workers !signals !job = do
@@ -185,11 +250,11 @@ scheduleAfter !workers !signals !job = do
 
 -- Similar to 'scheduleAfter', but if all signals are already resolved,
 -- it will directly execute the job instead of scheduling it on the queue.
-scheduleAfterOrRun :: [NativeSignal] -> Job -> IO ()
-scheduleAfterOrRun !signals !job = do
+scheduleAfterOrRun :: [NativeSignal] -> ThreadIdx -> Job -> IO ()
+scheduleAfterOrRun !signals !threadIdx !job = do
   direct <- scheduleAfterOr signals job
   if direct then
-    runJob job
+    runJob job threadIdx
   else
     return ()
 
@@ -233,7 +298,6 @@ scheduleAfterOr nativeSignals job = do
         -- whether the counter is now 0
         return $ old == resolvedCount
   go nativeSignals 0
-
 
 
 {-

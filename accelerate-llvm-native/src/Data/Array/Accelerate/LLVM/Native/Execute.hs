@@ -24,9 +24,6 @@
 
 module Data.Array.Accelerate.LLVM.Native.Execute (
 
-  -- executeAcc,
-  -- executeOpenAcc
-
 ) where
 
 import Data.Array.Accelerate.Type
@@ -47,6 +44,7 @@ import Data.Array.Accelerate.LLVM.Native.Target
 import Data.Array.Accelerate.LLVM.Native.State
 import Data.Array.Accelerate.LLVM.Native.Execute.Environment
 import Data.Array.Accelerate.LLVM.Native.Execute.Kernel
+import Data.Array.Accelerate.LLVM.Native.Execute.KernelArguments
 import Data.Array.Accelerate.LLVM.Native.Execute.Scheduler
 
 import Data.IORef
@@ -57,9 +55,9 @@ import Control.Concurrent.MVar
 
 
 instance Execute UniformScheduleFun NativeKernel where
-  executeAfunSchedule tp = runValuesIOFun workers tp . executeScheduleFun workers Empty
+  executeAfunSchedule tp fun = runValuesIOFun workers tp $ scheduleScheduleFun workers Empty fun
     where
-      workers = targetWorkers defaultTarget
+      workers = defaultWorkers
 
 runValuesIOFun
   :: Workers
@@ -71,34 +69,43 @@ runValuesIOFun workers (GFunctionRlam argTp funTp) f = \arg -> runValuesIOFun wo
     input :: GroundsR t -> Input t -> Values (Input t)
     input = values workers . inputR
 runValuesIOFun workers (GFunctionRbody tp) f
-  | Refl <- reprIsBody @UniformScheduleFun tp = \arg -> schedule workers $ Job $ f $ output tp arg
+  | Refl <- reprIsBody @UniformScheduleFun tp = \arg -> schedule workers $ Job $ \_ -> f $ output tp arg
   where
     output :: GroundsR t -> Output t -> Values (Output t)
     output = values workers . outputR
 
-executeScheduleFun :: Workers -> NativeEnv env -> UniformScheduleFun NativeKernel env t -> ValuesIOFun t
-executeScheduleFun !workers !env (Sbody schedule) = executeSchedule workers env schedule
-executeScheduleFun !workers !env (Slam lhs fun) = \input -> executeScheduleFun workers (env `push` (lhs, input)) fun
+-- Schedules a ScheduleFun (to be executed on a worker thread) and returns its result
+scheduleScheduleFun :: Workers -> NativeEnv env -> UniformScheduleFun NativeKernel env t -> ValuesIOFun t
+scheduleScheduleFun !workers !env (Sbody body) = schedule workers $ Job $ \threadIdx -> executeSchedule workers threadIdx env body
+scheduleScheduleFun !workers !env (Slam lhs fun) = \input -> scheduleScheduleFun workers (env `push` (lhs, input)) fun
 
-executeSchedule :: Workers -> NativeEnv env -> UniformSchedule NativeKernel env -> IO ()
-executeSchedule !workers !env = \case
+-- Executes a ScheduleFun
+executeScheduleFun :: Workers -> ThreadIdx -> NativeEnv env -> UniformScheduleFun NativeKernel env t -> ValuesIOFun t
+executeScheduleFun !workers !threadIdx !env (Sbody body) = executeSchedule workers threadIdx env body
+executeScheduleFun !workers !threadIdx !env (Slam lhs fun) = \input -> executeScheduleFun workers threadIdx (env `push` (lhs, input)) fun
+
+executeSchedule :: Workers -> ThreadIdx -> NativeEnv env -> UniformSchedule NativeKernel env -> IO ()
+executeSchedule !workers !threadIdx !env = \case
   Return -> return ()
   Alet lhs binding body -> do
     value <- executeBinding workers env (lhsToTupR lhs) binding
     let env' = env `push` (lhs, value)
-    executeSchedule workers env' body
+    executeSchedule workers threadIdx env' body
   Effect effect next -> do
-    executeEffect workers env effect $ executeSchedule workers env next
+    executeEffect workers threadIdx env effect $ Job $ \threadIdx' -> executeSchedule workers threadIdx' env next
   Acond var true false next -> do
     let value = prj (varIdx var) env
     let branch = if value == 1 then true else false
-    executeSchedule workers env branch
-    executeSchedule workers env next
+    executeSchedule workers threadIdx env branch
+    executeSchedule workers threadIdx env next
   Awhile io step input next -> do
-    executeAwhile workers env io step (prjVars input env) next
+    executeAwhile workers threadIdx env io step (prjVars input env) next
+  Fork a (Effect (SignalAwait signals) b) -> do
+    scheduleAfter workers (map (`prj` env) signals) $ Job $ \threadIdx' -> executeSchedule workers threadIdx' env b
+    executeSchedule workers threadIdx env a
   Fork a b -> do
-    schedule workers (Job $ executeSchedule workers env b)
-    executeSchedule workers env a
+    schedule workers $ Job $ \threadIdx' -> executeSchedule workers threadIdx' env b
+    executeSchedule workers threadIdx env a
 
 executeBinding :: Workers -> NativeEnv env -> BasesR t -> Binding env t -> IO (Values t)
 executeBinding workers !env tp = \case
@@ -125,21 +132,21 @@ executeBinding workers !env tp = \case
     ValuesSingle . groundValue tp <$> readIORef ioref
   RefRead _ -> internalError "Ref impossible"
 
-executeEffect :: forall env. Workers -> NativeEnv env -> Effect NativeKernel env -> IO () -> IO ()
-executeEffect !workers !env !effect !next = case effect of
+executeEffect :: forall env. Workers -> ThreadIdx -> NativeEnv env -> Effect NativeKernel env -> Job -> IO ()
+executeEffect !workers !threadIdx !env !effect !next = case effect of
   Exec md kernelFun args -> do
-    callKernel env md kernelFun args
-    next
+    Exists kernelCall <- prepareKernel env md kernelFun args
+    executeKernel workers threadIdx kernelCall (Job $ \threadIdx' -> touchKernel env kernelFun args >> runJob next threadIdx)
   SignalAwait signals -> 
-    scheduleAfterOrRun (map (`prj` env) signals) $ Job next
+    scheduleAfterOrRun (map (`prj` env) signals) threadIdx $ next
   SignalResolve signals -> do
     mapM_ resolve signals
-    next
+    runJob next threadIdx
   RefWrite ref@(Var (BaseRrefWrite tp) _) valueVar -> do
     let OutputRef ioref = prj (varIdx ref) env
     let value = prjGroundVar (Var tp $ varIdx valueVar) env
     writeIORef ioref value
-    next
+    runJob next threadIdx
   RefWrite _ _ -> internalError "OutputRef impossible"
   where
     resolve :: Idx env SignalResolver -> IO ()
@@ -149,28 +156,29 @@ executeEffect !workers !env !effect !next = case effect of
 
 executeAwhile
   :: Workers
+  -> ThreadIdx
   -> NativeEnv env
   -> InputOutputR input output
   -> UniformScheduleFun NativeKernel env (input -> Output PrimBool -> output -> ())
   -> Values input
   -> UniformSchedule NativeKernel env
   -> IO ()
-executeAwhile !workers !env !io !step !input !next = do
+executeAwhile !workers !threadIdx !env !io !step !input !next = do
   -- Set up the output variables for this iteration (and the input for the next)
   signal <- newSignal
   ioref <- newIORef $ internalError "Illegal schedule: Read from ref without value. Some synchronization might be missing."
   (output, nextInput) <- bindAwhileIO io
 
   -- Check condition when it is available
-  scheduleAfter workers [signal] $ Job $ do
+  scheduleAfter workers [signal] $ Job $ \threadIdx' -> do
     condition <- readIORef ioref
     if condition == 1 then
-      executeAwhile workers env io step nextInput next
+      executeAwhile workers threadIdx' env io step nextInput next
     else
-      executeSchedule workers env next
+      executeSchedule workers threadIdx' env next
 
   -- Execute a step
-  executeScheduleFun workers env step input (ValuesSingle (Value signal) `ValuesPair` ValuesSingle (Value $ OutputRef ioref)) output
+  executeScheduleFun workers threadIdx env step input (ValuesSingle (Value signal) `ValuesPair` ValuesSingle (Value $ OutputRef ioref)) output
 
 bindAwhileIO :: InputOutputR input output -> IO (Values output, Values input)
 bindAwhileIO InputOutputRsignal = do

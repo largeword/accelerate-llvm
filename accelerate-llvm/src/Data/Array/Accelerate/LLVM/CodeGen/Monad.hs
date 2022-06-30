@@ -113,10 +113,10 @@ liftCodeGen :: LLVM arch a -> CodeGen arch a
 liftCodeGen = CodeGen . lift
 
 codeGenFunction
-  :: forall arch f. (HasCallStack, Target arch, Intrinsic arch, Result f ~ ())
+  :: forall arch f. (HasCallStack, Target arch, Intrinsic arch, Result f ~ Bool)
   => UID
   -> Label
-  -> (GlobalFunctionDefinition () -> GlobalFunctionDefinition f)
+  -> (GlobalFunctionDefinition Bool -> GlobalFunctionDefinition f)
   -> CodeGen arch ()
   -> LLVM arch (Module f)
 codeGenFunction uid name bind body = do
@@ -127,7 +127,6 @@ codeGenFunction uid name bind body = do
       -- zone <- zone_begin_alloc 0 [] (S8.unpack sbs) [] 0
       body
       -- _    <- zone_end zone
-      return_
       createBlocks
     )
     $ CodeGenState
@@ -154,7 +153,7 @@ codeGenFunction uid name bind body = do
     , moduleSourceFileName   = B.empty
     , moduleDataLayout       = targetDataLayout @arch
     , moduleTargetTriple     = targetTriple @arch
-    , moduleMain             = bind $ Body VoidType Nothing (GlobalFunctionBody fullName code)
+    , moduleMain             = bind $ Body (PrimType BoolPrimType) Nothing (GlobalFunctionBody fullName code)
     , moduleOtherDefinitions = typeDefs ++ symbols ++ metadata
     }
 

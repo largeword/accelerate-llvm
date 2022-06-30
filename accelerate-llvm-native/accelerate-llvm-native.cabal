@@ -92,6 +92,7 @@ Library
     Data.Array.Accelerate.LLVM.Native.CodeGen.Map
     Data.Array.Accelerate.LLVM.Native.CodeGen.Permute
     Data.Array.Accelerate.LLVM.Native.CodeGen.Scan
+    Data.Array.Accelerate.LLVM.Native.CodeGen.Skeleton
     Data.Array.Accelerate.LLVM.Native.CodeGen.Stencil
     Data.Array.Accelerate.LLVM.Native.CodeGen.Transform
 
@@ -113,6 +114,7 @@ Library
     Data.Array.Accelerate.LLVM.Native.Execute.Scheduler
     Data.Array.Accelerate.LLVM.Native.Execute.Sleep
     Data.Array.Accelerate.LLVM.Native.Execute.Kernel
+    Data.Array.Accelerate.LLVM.Native.Execute.KernelArguments
 
     Data.Array.Accelerate.LLVM.Native.Plugin.Annotation
     Data.Array.Accelerate.LLVM.Native.Plugin.BuildInfo
@@ -143,6 +145,7 @@ Library
         , lockfree-queue                >= 0.2
         , mtl                           >= 2.2.1
         , prettyprinter                 >= 1.7
+        , primitive                     >= 0.7
           -- TODO: These are only used for lifting ByteStrings. bytestring
           --       0.11.2.0 include its own, better lifting instances. Once
           --       that's stable, we can remove this dependency and bump

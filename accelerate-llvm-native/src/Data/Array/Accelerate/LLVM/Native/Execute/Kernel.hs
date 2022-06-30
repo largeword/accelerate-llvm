@@ -28,75 +28,30 @@ import Data.Array.Accelerate.AST.Schedule.Uniform
 import Data.Array.Accelerate.Array.Buffer
 import Data.Array.Accelerate.Array.Unique
 import Data.Array.Accelerate.Type
-import Data.Array.Accelerate.Lifetime
 import Data.Array.Accelerate.Error
 import Data.Array.Accelerate.LLVM.CodeGen.Environment       ( MarshalArg, marshalScalarArg )
 import Data.Array.Accelerate.LLVM.Native.Kernel
-import Data.Array.Accelerate.LLVM.Native.Execute.Environment
 import Data.Array.Accelerate.LLVM.Native.Execute.Marshal
 import Data.Primitive.Vec
 
 import Foreign.Ptr
+import Foreign.ForeignPtr
+import GHC.ForeignPtr
 import Foreign.Marshal.Alloc
 import Foreign.Storable
 import Data.Typeable
 
 foreign import ccall "dynamic"  
-  callKernelPtr :: FunPtr (Ptr () -> IO ()) -> Ptr () -> IO ()
+  callKernelPtr :: FunPtr (Ptr () -> IO Bool) -> Ptr () -> IO Bool
 
-callKernel :: forall env f. NativeEnv env -> NativeKernelMetadata f -> KernelFun NativeKernel f -> SArgs env f -> IO ()
-callKernel env (NativeKernelMetadata envSize) fun args =
-  -- Allocate memory to store the arguments to the function.
-  -- Align by 2 cache lines.
-  allocaBytesAligned envSize (cacheLineSize * 2) $ \envPtr -> do
-    putStrLn "Trying to launch kernel"
-    let
-      go :: Int -> OpenKernelFun NativeKernel kenv f' -> SArgs env f' -> IO ()
-      go cursor (KernelFunBody (NativeKernel _ funLifetime)) ArgsNil
-        | cursor == envSize =
-          withLifetime funLifetime $ \funPtr -> do
-            putStrLn "Starting"
-            print (funPtr, envPtr)
-            callKernelPtr (castFunPtr funPtr) (castPtr envPtr)
-            putStrLn "Done!"
-        | otherwise = internalError "Cursor and size do not match. callKernel and sizeOfEnv might be inconsistent."
-      go cursor (KernelFunLam argR fun') (arg :>: args') = do
-        let (align, size) = alignmentAndSizeOfArgument argR
-        let aligned = makeAligned cursor align
-        let ptr = plusPtr envPtr aligned
-        withArg env argR ptr arg $ go (aligned + size) fun' args'
+data KernelCall env where
+  KernelCall :: !(FunPtr (KernelType env)) -> !(ForeignPtr ()) -> KernelCall env
 
-    go 0 fun args
-
-
--- Writes the argument to the struct. This function is in the with-resource style,
--- to ensure that the arguments stay live while executing the kernel.
+-- Executes a kernel. Returns True if all work has definitely been finished.
+-- There may be multiple threads that return true. It is guaranteed that at
+-- least one thread returns True.
 --
-withArg :: NativeEnv env -> KernelArgR t s -> Ptr (MarshalArg s) -> SArg env t -> IO () -> IO ()
-withArg env (KernelArgRbuffer _ _) ptr (SArgBuffer _ var) action = do
-  let Buffer ua = prj (varIdx var) env
-  withUniqueArrayPtr ua $ \bufferPtr -> do
-    poke ptr bufferPtr
-    action
-withArg env (KernelArgRscalar tp'@(SingleScalarType tp)) ptr (SArgScalar var) action
-  | SingleDict <- singleDict tp
-  , Refl <- marshalScalarArg (SingleScalarType tp) = do
-    let value = prjGroundVar (Var (GroundRscalar tp') (varIdx var)) env
-    poke ptr value
-    action
-withArg env (KernelArgRscalar (VectorScalarType (VectorType _ (tp :: SingleType u)))) ptr (SArgScalar var) action
-  | SingleDict <- singleDict tp = do
-    let
-      ptr' :: Ptr u
-      ptr' = castPtr ptr
-      value = prj (varIdx var) env
-      go :: Int -> [u] -> IO ()
-      go _ [] = return ()
-      go i (v:vs) = do
-        pokeElemOff ptr' i v
-        go (i + 1) vs
-    go 0 $ listOfVec value
-    action
-
-cacheLineSize :: Int
-cacheLineSize = 64
+callKernel :: FunPtr (KernelType env) -> (ForeignPtr ()) -> IO Bool
+callKernel funPtr foreignPtr =
+  withForeignPtr foreignPtr $ \argPtr ->
+      callKernelPtr (castFunPtr funPtr) (castPtr argPtr)
