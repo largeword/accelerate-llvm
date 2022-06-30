@@ -104,27 +104,54 @@ schedule workers job = do
 
 runWorker :: Workers -> ThreadIdx -> IO ()
 runWorker !workers !threadIdx = do
-  job <- dequeue workers
-  runJob job threadIdx
+  tryRunWork workers threadIdx 0
+
+tryRunWork :: Workers -> ThreadIdx -> Int16 -> IO ()
+tryRunWork !workers !threadIdx 16 = do
+  sleepIf (workerSleep workers) ({- Last check before sleeping -} noWork workers)
   runWorker workers threadIdx
+tryRunWork !workers !threadIdx !retries = do
+  mjob <- tryDequeue workers
+  case mjob of
+    Just job -> do
+      runJob job threadIdx
+      runWorker workers threadIdx
+    Nothing ->
+      -- tryRunWork workers threadIdx (retries + 1)
+      trySteal workers threadIdx (stealingNextThreadIdx workers threadIdx threadIdx) (retries + 1)
 
-dequeue :: Workers -> IO Job
-dequeue !workers = loop 0
-  where
-    loop :: Int16 -> IO Job
-    loop !retries = do
-      mjob <- tryDequeue workers
-      case mjob of
-        Just job -> return job
-        Nothing
-          | retries < 16 -> loop (retries + 1)
-          | otherwise -> do
-            sleepIf (workerSleep workers) (queueEmpty workers)
-            loop 0
+trySteal :: Workers -> ThreadIdx -> ThreadIdx -> Int16 -> IO ()
+trySteal !workers !myThreadIdx !otherThreadIdx !retries
+  | myThreadIdx == otherThreadIdx -- Traversed all worker threads in the array, no work found :(
+    = tryRunWork workers myThreadIdx (retries + 1)
+trySteal !workers !myThreadIdx !otherThreadIdx !retries = do
+  helpKernel workers myThreadIdx otherThreadIdx
+    (do
+      -- 'otherThreadIdx' was inactive.
+      -- Try next thread.
+      let nextThreadIdx = stealingNextThreadIdx workers myThreadIdx otherThreadIdx
+      trySteal workers myThreadIdx nextThreadIdx retries
+    )
+    (
+      -- 'otherThreadIdx' was active.
+      -- Go back to worker loop.
+      runWorker workers myThreadIdx
+    )
 
-queueEmpty :: Workers -> IO Bool
-queueEmpty !workers =
-  nullQ (workerTaskQueue workers)
+stealingNextThreadIdx :: Workers -> ThreadIdx -> ThreadIdx -> ThreadIdx
+stealingNextThreadIdx workers myThreadIdx otherThreadIdx
+  | even myThreadIdx
+    = if otherThreadIdx == workerCount workers - 1 then 0 else otherThreadIdx + 1
+  | otherwise
+    = if otherThreadIdx == 0 then workerCount workers - 1 else otherThreadIdx - 1
+
+noWork :: Workers -> IO Bool
+noWork !workers = do
+  queueEmpty <- nullQ (workerTaskQueue workers)
+  if queueEmpty then
+    return True
+  else
+    not <$> hasActivity workers
 
 tryDequeue :: Workers -> IO (Maybe Job)
 tryDequeue !workers = tryPopR (workerTaskQueue workers)
@@ -168,6 +195,17 @@ defaultWorkers = unsafePerformIO hireWorkers
 numWorkers :: Workers -> Int
 numWorkers = workerCount
 
+hasActivity :: Workers -> IO Bool
+hasActivity workers = go 0
+  where
+    go :: Int -> IO Bool
+    go i
+      | i == workerCount workers = return False
+      | otherwise = do
+        activity <- readArray (workerActivity workers) i
+        case activity of
+          Inactive -> go (i + 1)
+          Active{} -> return True
 
 data WaitingJob = WaitingJob
   { waitingDependencies :: {-# UNPACK #-} !Atomic
@@ -222,14 +260,16 @@ resolveSignal !workers (NativeSignal ioref) = do
 executeKernel :: forall env. Workers -> ThreadIdx -> KernelCall env -> Job -> IO ()
 executeKernel !workers !myIdx (KernelCall fun arg) continuation = do
   writeArray (workerActivity workers) myIdx $ Active @env Proxy fun arg continuation
-  void $ helpKernel workers myIdx myIdx (return ())
+  wakeAll $ workerSleep workers
+  helpKernel workers myIdx myIdx (return ()) (return ())
 
-helpKernel :: Workers -> ThreadIdx -> ThreadIdx -> IO () -> IO ()
-helpKernel !workers !myIdx !otherIdx !whenInactive = do
+helpKernel :: Workers -> ThreadIdx -> ThreadIdx -> IO () -> IO () -> IO ()
+helpKernel !workers !myIdx !otherIdx !whenInactive !afterActive = do
   ticket <- readArrayElem (workerActivity workers) otherIdx
   case peekTicket ticket of
     Inactive -> whenInactive
     Active (Proxy :: Proxy env) fun arg continuation -> do
+      putStrLn ("Help " ++ show (myIdx, otherIdx))
       finished <- callKernel @env fun arg
       when finished $ do
         -- All the work is finished. There might be multiple thread that get
@@ -238,6 +278,7 @@ helpKernel !workers !myIdx !otherIdx !whenInactive = do
         --
         (last, _) <- casArrayElem (workerActivity workers) otherIdx ticket Inactive
         when last (runJob continuation myIdx)
+      afterActive
 
 -- Schedules a job to be executed when the given signals are resolved.
 scheduleAfter :: Workers -> [NativeSignal] -> Job -> IO ()
