@@ -85,12 +85,12 @@ codegen :: UID
             -> LLVM Native (Module (KernelType env))
 codegen uid env c args = loopheader $ evalCluster c args gamma
   where
-    (envTp, extractEnv, gamma) = bindEnv env
-    loopheader loopbody = codeGenFunction uid "name_of_a_fused_cluster" (LLVM.Lam (PtrPrimType envTp defaultAddrSpace) "env") $
+    (argTp, extractEnv, workstealIndex, workstealActiveThreads, gamma) = bindHeaderEnv env
+    loopheader loopbody = codeGenFunction uid "name_of_a_fused_cluster" (LLVM.Lam argTp "arg") $
       do
         extractEnv
         loopsize c gamma args $ \(shr, sh) ->
-          imapNestFromTo shr (constant (shapeType shr) (empty shr)) sh sh $ \ix i -> loopbody (i, multidim' shr ix)
+          workstealChunked shr workstealIndex workstealActiveThreads sh $ \ix i -> loopbody (i, multidim' shr ix)
 
 -- inspect the cluster and decide what the loopy structure around this loopbody should be,
 -- i.e. the number of dimension (nested loops) and bounds. Might need to give this access to
