@@ -24,7 +24,6 @@ import qualified LLVM.CodeGenOpt                                    as CodeOptim
 
 -- accelerate
 import Data.Array.Accelerate.LLVM.Native.Link.Cache                 ( LinkCache )
-import Data.Array.Accelerate.LLVM.Native.Execute.Scheduler          ( Workers )
 import Data.Array.Accelerate.LLVM.Target                            ( Target(..) )
 import Data.Array.Accelerate.LLVM.CodeGen.Intrinsic
 
@@ -38,7 +37,6 @@ import System.IO.Unsafe
 --
 data Native = Native
   { linkCache     :: !LinkCache
-  , targetWorkers :: !Workers
   }
 
 instance Target Native where

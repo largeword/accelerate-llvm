@@ -22,7 +22,6 @@ import Data.Array.Accelerate.Debug.Internal
 
 import Data.Array.Accelerate.LLVM.State
 import Data.Array.Accelerate.LLVM.Native.Target
-import Data.Array.Accelerate.LLVM.Native.Execute.Scheduler
 import qualified Data.Array.Accelerate.LLVM.Native.Link.Cache       as LC
 import qualified Data.Array.Accelerate.LLVM.Native.Debug            as Debug
 
@@ -63,9 +62,8 @@ createTarget
     :: [Int]              -- ^ CPUs to launch worker threads on
     -> IO Native
 createTarget cpus = do
-  gang    <- hireWorkersOn cpus
   linker  <- LC.new
-  return  $! Native linker gang
+  return  $! Native linker
 
 {--
 -- | The strategy for balancing work amongst the available worker threads.

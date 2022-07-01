@@ -62,12 +62,11 @@ mkGenerate
     -> Arg genv (Fun' (sh -> e))
     -> LLVM Native (Module (KernelType genv))
 mkGenerate uid name env array@(ArgArray _ (ArrayR shr _) sh _) (ArgFun fun)
-  = codeGenFunction uid "generate" (LLVM.Lam (PtrPrimType envTp defaultAddrSpace) "env") $ do
+  = codeGenFunction uid "generate" (LLVM.Lam argTp "arg") $ do
       extractEnv
       let sh' = aprjParameters (shapeExpVars shr sh) gamma
-      imapNestFromTo shr (constant (shapeType shr) $ empty shr) sh' sh' $ \ix i -> do
+      workstealChunked shr workstealIndex workstealActiveThreads sh' $ \ix i -> do
         r <- app1 (llvmOfFun1 fun gamma) ix
         writeArray TypeInt gamma array i r
-      return ()
   where
-    (envTp, extractEnv, gamma) = bindEnv env
+    (argTp, extractEnv, workstealIndex, workstealActiveThreads, gamma) = bindHeaderEnv env

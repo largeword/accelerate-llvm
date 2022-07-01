@@ -245,6 +245,12 @@ data Instruction a where
                   -> TupleIdx a t
                   -> Instruction (Ptr t)
 
+  GetVecElementPtr
+                  :: IntegralType i
+                  -> Operand (Ptr (Vec n t))
+                  -> Operand i
+                  -> Instruction (Ptr t)
+
   -- <http://llvm.org/docs/LangRef.html#i-fence>
   --
   Fence           :: Atomicity
@@ -259,7 +265,7 @@ data Instruction a where
                   -> Operand a                  -- replacement value
                   -> Atomicity                  -- on success
                   -> MemoryOrdering             -- on failure (see docs for restrictions)
-                  -> Instruction (Struct (a, PrimBool)) -- should be (a, Bool)
+                  -> Instruction (Struct (a, Bool))
 
   -- <http://llvm.org/docs/LangRef.html#atomicrmw-instruction>
   --
@@ -424,6 +430,7 @@ instance Downcast (Instruction a) LLVM.Instruction where
       PrimType (PtrPrimType (StructPrimType _ tp) _) ->
                              LLVM.GetElementPtr inbounds (downcast n) [constant (0 :: Int), constant (fromIntegral $ tupleIdxToInt tp i :: Int32)] md
       _ -> internalError "Struct ptr impossible"
+    GetVecElementPtr _ n i -> LLVM.GetElementPtr inbounds (downcast n) [constant (0 :: Int), downcast i] md
     Fence a               -> LLVM.Fence (downcast a) md
     CmpXchg _ v p x y a m -> cmpXchg (downcast v) (downcast p) (downcast x) (downcast y) (downcast a) (downcast m) md
     AtomicRMW t v f p x a -> atomicRMW (downcast v) (downcast (t,f)) (downcast p) (downcast x) (downcast a) md
@@ -642,6 +649,10 @@ instance TypeOf Instruction where
     GetStructElementPtr t x _ -> case typeOf x of
       PrimType (PtrPrimType _ addr) -> PrimType $ PtrPrimType t addr
       _ -> internalError "Ptr impossible"
+    GetVecElementPtr _ x _ -> case typeOf x of
+      PrimType (PtrPrimType (ScalarPrimType (VectorScalarType (VectorType _ tp))) addr)
+        -> PrimType $ PtrPrimType (ScalarPrimType $ SingleScalarType tp) addr
+      _ -> internalError "Vec ptr impossible"
     Fence{}               -> VoidType
     CmpXchg t _ _ _ _ _ _ -> PrimType . StructPrimType False $ ScalarPrimType (SingleScalarType (NumSingleType (IntegralNumType t))) `pair` primType
     AtomicRMW _ _ _ _ x _ -> typeOf x

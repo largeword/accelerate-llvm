@@ -231,15 +231,7 @@ atomicCAS_rmw' t i update addr = withDict (integralElt i) $ do
   done  <- instr' $ ExtractValue primType            (TupleIdxRight TupleIdxSelf) r
   next' <- instr' $ ExtractValue (ScalarPrimType si) (TupleIdxLeft  TupleIdxSelf) r
 
-  -- Since we removed Bool from the set of primitive types Accelerate
-  -- supports, we have to do a small hack to have LLVM consider this as its
-  -- correct type of a 1-bit integer (rather than the 8-bits it is actually
-  -- stored as)
-  done' <- case done of
-             LocalReference _ (UnName n) -> return $ OP_Bool (LocalReference type' (UnName n))
-             _                           -> internalError "expected unnamed local reference"
-
-  bot   <- cbr done' exit spin
+  bot   <- cbr (OP_Bool done) exit spin
   _     <- phi' (TupRsingle si) spin old' [(ir i init',top), (ir i next',bot)]
 
   setBlock exit
@@ -332,11 +324,7 @@ atomicCAS_cmp' t i cmp addr val = withDict (singleElt t) $ do
   next  <- instr' $ ExtractValue (ScalarPrimType si) (TupleIdxLeft  TupleIdxSelf) r
   next' <- instr' $ BitCast (SingleScalarType t) next
 
-  done' <- case done of
-             LocalReference _ (UnName n) -> return $ OP_Bool (LocalReference type' (UnName n))
-             _                           -> internalError "expected unnamed local reference"
-
-  bot   <- cbr done' exit test
+  bot   <- cbr (OP_Bool done) exit test
   _     <- phi' (TupRsingle $ SingleScalarType t) test old [(ir t start,top), (ir t next',bot)]
 
   setBlock exit
