@@ -1,11 +1,12 @@
 {-# LANGUAGE BangPatterns      #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs             #-}
+{-# LANGUAGE InstanceSigs      #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PatternSynonyms   #-}
+{-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TemplateHaskell   #-}
 {-# LANGUAGE TypeFamilies      #-}
-{-# LANGUAGE InstanceSigs #-}
-{-# LANGUAGE StandaloneDeriving #-}
 
 -- |
 -- Module      : Data.Array.Accelerate.LLVM.Native.Accelerate
@@ -17,7 +18,7 @@
 -- Portability : non-portable (GHC extensions)
 --
 
-module Data.Array.Accelerate.LLVM.Native.Operation 
+module Data.Array.Accelerate.LLVM.Native.Operation
   where
 
 -- accelerate
@@ -35,7 +36,24 @@ import Data.Array.Accelerate.Eval
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Array.Accelerate.AST.Partitioned (OutArgsOf)
-import Data.Array.Accelerate.AST.Environment (Val)
+import Data.Array.Accelerate.AST.Environment (Val, weakenId)
+import Data.Array.Accelerate.Representation.Array (ArrayR(..))
+import Data.Array.Accelerate.Trafo.Var (DeclareVars(..), declareVars, identity)
+import Data.Array.Accelerate.Representation.Ground (buffersR)
+import Data.Array.Accelerate.Trafo.Desugar (desugarAlloc)
+import Data.Array.Accelerate.AST.LeftHandSide
+import Data.Array.Accelerate.Trafo.Exp.Substitution (weakenVars)
+import Data.Array.Accelerate.Trafo.Operation.Substitution (aletUnique, alet, weaken)
+import Data.Array.Accelerate.Representation.Shape (ShapeR (..))
+import Data.Array.Accelerate.Representation.Type (TypeR, TupR (..))
+import Data.Array.Accelerate.Type (scalarType)
+import Data.Array.Accelerate.Analysis.Match
+import Data.Array.Accelerate.Trafo.Substitution (compose)
+import Data.Maybe (isJust)
+import Data.Array.Accelerate.Interpreter (InOut (..))
+import qualified Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph as Graph
+import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solver
+import Lens.Micro
 
 
 data NativeOp op where
@@ -47,12 +65,20 @@ data NativeOp op where
                             -> Fun' (sh -> PrimMaybe sh')
                             -> In sh e
                             -> ())
+  -- this one covers ScanDim, ScanP1 and ScanP2. Only ScanP1's second output argument will be used for the partial reductions,
+  -- the others will simply get SLV'd away.
+  NScanl1      :: NativeOp (Fun' (e -> e -> e) 
+                         -> In (sh, Int) e 
+                         -> Out (sh, Int) e -- the local scan result
+                         -> Out (sh, Int) e -- the local fold result
+                         -> ())
 
 instance PrettyOp NativeOp where
   prettyOp NMap         = "map"
   prettyOp NBackpermute = "backpermute"
   prettyOp NGenerate    = "generate"
   prettyOp NPermute     = "permute"
+  prettyOp NScanl1      = "scanl1"
 
 instance NFData' NativeOp where
   rnf' !_ = ()
@@ -61,7 +87,14 @@ instance DesugarAcc NativeOp where
   mkMap         a b c   = Exec NMap         (a :>: b :>: c :>:       ArgsNil)
   mkBackpermute a b c   = Exec NBackpermute (a :>: b :>: c :>:       ArgsNil)
   mkGenerate    a b     = Exec NGenerate    (a :>: b :>:             ArgsNil)
-  mkPermute     a b c d = Exec NPermute     (a :>: b :>: c :>: d :>: ArgsNil)
+  mkScan LeftToRight f Nothing i o
+    -- If multidimensional, simply NScanl1.
+    -- Otherwise, NScanl1 followed by NScanl1 on the reductions, followed by a replicate on that result and then zipWith the first result.
+    = error "todo"
+  -- right to left is conceptually easy once we already have order variables for backpermute. 
+  -- Exclusive scans (changing array size) are weirder, require an extra 'cons' primitive
+  mkScan _ _ _ _ _ = error "todo" 
+  mkPermute     a b c d = Exec NPermute (a :>: b :>: c :>: d :>: ArgsNil)
 
 instance SimplifyOperation NativeOp where
   detectCopy _          NMap         = detectMapCopies
@@ -80,29 +113,59 @@ instance EncodeOperation NativeOp where
   encodeOperation NGenerate    = intHost $(hashQ ("Map" :: String))
   encodeOperation NPermute     = intHost $(hashQ ("Map" :: String))
 
--- No fusion at all
-noFusion :: Set Label -> Label -> Information NativeOp
-noFusion inputs l = 
-  mempty{_graphI = 
-    mempty{_infusibleEdges = 
-      Set.map (-?> l) inputs}}
-  
+-- -3 can't fuse with anything, -2 for 'left to right', -1 for 'right to left', n for 'unpredictable, see computation n' (currently only backpermute)
+data NativeILPVar = Order InOut  Label
+  deriving (Eq, Ord)
+pattern InDir, OutDir :: Label -> Graph.Var NativeOp
+pattern InDir  l = BackendSpecific (Order  InArr l)
+pattern OutDir l = BackendSpecific (Order OutArr l)
 
 instance MakesILP NativeOp where
-  type BackendVar NativeOp = ()
+  type BackendVar NativeOp = NativeILPVar
   type BackendArg NativeOp = ()
   data BackendClusterArg NativeOp a = None
-  
-  mkGraph NMap (_ :>: L _ (_, lIns) :>: _ :>: ArgsNil) = noFusion lIns
-  mkGraph NBackpermute (_ :>: L _ (_, lIns) :>: _ :>: ArgsNil) = noFusion lIns
-  mkGraph NGenerate _ = const mempty
-  mkGraph NPermute (_ :>: _ :>: _ :>: L _ (_, lIns) :>: ArgsNil) = noFusion lIns
+
+  mkGraph NBackpermute (_ :>: L _ (_, lIns) :>: _ :>: ArgsNil) l@(Label i _) =
+    Graph.Info
+      mempty
+      (    inputConstraints l lIns
+        <> c (InDir l) .==. int i)
+      (defaultBounds l)
+  mkGraph NGenerate _ l =
+    Graph.Info
+      mempty
+      mempty
+      (defaultBounds l)
+  mkGraph NMap (_ :>: L _ (_, lIns) :>: _ :>: ArgsNil) l =
+    Graph.Info
+      mempty
+      (    inputConstraints l lIns
+        <> c (InDir l) .==. c (OutDir l))
+      (defaultBounds l)
+  mkGraph NPermute (_ :>: L _ (_, lTargets) :>: _ :>: L _ (_, lIns) :>: ArgsNil) l =
+    Graph.Info
+      ( mempty & infusibleEdges .~ Set.map (-?> l) lTargets) -- add infusible edges from the producer of target array to the permute
+      (    inputConstraints l lIns
+        <> c (OutDir l) .==. int (-3)) -- Permute cannot fuse with its consumer
+      ( lower (-2) (InDir l)) -- default lowerbound for the input, but not for the output (as we set it to -3)
+  mkGraph NScanl1 (_ :>: L _ (_, lIns) :>: _ :>: _ :>: ArgsNil) l =
+    undefined
 
   labelLabelledArg _ _ (L x y) = LOp x y ()
   getClusterArg _ = None
-  finalize = const mempty
+  -- For each label: If the output is manifest, then its direction is negative (i.e. not in a backpermuted order)
+  finalize = foldMap $ \l -> timesN (manifest l) .>. c (OutDir l)
 
-  encodeBackendClusterArg _ = mempty
+  encodeBackendClusterArg None = intHost $(hashQ ("None" :: String))
+
+inputConstraints :: Label -> Labels -> Constraint NativeOp
+inputConstraints l = foldMap $ \lIn ->
+                timesN (fused lIn l) .>=. c (InDir l) .-. c (OutDir lIn)
+    <> (-1) .*. timesN (fused lIn l) .<=. c (InDir l) .-. c (OutDir lIn)
+
+defaultBounds :: Label -> Bounds NativeOp
+defaultBounds l = lower (-2) (InDir l) <> lower (-2) (OutDir l) 
+
 
 instance NFData' (BackendClusterArg NativeOp) where
   rnf' !_ = ()
@@ -111,27 +174,49 @@ instance ShrinkArg (BackendClusterArg NativeOp) where
   shrinkArg _ None = None
   deadArg None = None
 
-deriving instance Eq (BackendClusterArg2 NativeOp env arg)
-
 instance StaticClusterAnalysis NativeOp where
-  -- TODO backpermute stuff, this is just a silly useless instance
-  data BackendClusterArg2 NativeOp env arg = NOTHING
-  def _ _ _ = NOTHING
-  valueToIn    NOTHING = NOTHING
-  valueToOut   NOTHING = NOTHING
-  inToValue    NOTHING = NOTHING
-  outToValue   NOTHING = NOTHING
-  outToSh      NOTHING = NOTHING
-  shToOut      NOTHING = NOTHING
-  shToValue    NOTHING = NOTHING
-  varToValue   NOTHING = NOTHING
-  varToSh      NOTHING = NOTHING
-  shToVar      NOTHING = NOTHING
-  shrinkOrGrow NOTHING = NOTHING
-  addTup       NOTHING = NOTHING
-  justUnit = NOTHING
-  onOp _ _ args _ = go args
-    where
-      go :: Args env args -> BackendArgs NativeOp env args
-      go ArgsNil = ArgsNil
-      go (_ :>: as) =  NOTHING :>: go as
+  data BackendClusterArg2 NativeOp env arg where
+    BP :: ShapeR sh1 -> ShapeR sh2 -> Fun env (sh1 -> sh2) -> BackendClusterArg2 NativeOp env arg
+    NoBP :: BackendClusterArg2 NativeOp env arg
+  def _ _ _ = NoBP
+  justUnit  = NoBP
+  valueToIn    = bpid
+  valueToOut   = bpid
+  inToValue    = bpid
+  outToValue   = bpid
+  outToSh      = bpid
+  shToOut      = bpid
+  shToValue    = bpid
+  varToValue   = bpid
+  varToSh      = bpid
+  shToVar      = bpid
+  shrinkOrGrow = bpid
+  addTup       = bpid
+  onOp NMap (BP a b c :>: ArgsNil) _ _ = NoBP :>: BP a b c :>: BP a b c :>: ArgsNil
+  onOp NMap (NoBP     :>: ArgsNil) _ _ = NoBP :>: NoBP     :>: NoBP     :>: ArgsNil
+  onOp NBackpermute (BP shr1 shr2 g :>: ArgsNil) (ArgFun f :>: ArgArray In (ArrayR shrI _) _ _ :>: ArgArray Out (ArrayR shrO _) _ _ :>: ArgsNil) _
+    | Just Refl <- matchShapeR shrO shr2  = NoBP :>: BP shr1 shrI (compose f g) :>: BP shr1 shr2 g :>: ArgsNil
+    | otherwise = error "BP shapeR doesn't match backpermute output shape"
+  onOp NBackpermute (NoBP           :>: ArgsNil) (ArgFun f :>: ArgArray In (ArrayR shrI _) _ _ :>: ArgArray Out (ArrayR shrO _) _ _ :>: ArgsNil) _
+                                          = NoBP :>: BP shrO shrI f             :>: NoBP           :>: ArgsNil    
+  onOp NGenerate (BP a b c :>: ArgsNil) _ _ = BP a b c :>: BP a b c :>: ArgsNil -- storing the bp in the function argument. Probably not required, could just take it from the array one during codegen
+  onOp NGenerate (NoBP     :>: ArgsNil) _ _ = NoBP     :>: NoBP     :>: ArgsNil
+  onOp NPermute ArgsNil _ _ = NoBP :>: NoBP :>: NoBP :>: NoBP :>: ArgsNil
+  onOp _ _ _ _ = error "todo"
+
+bpid :: BackendClusterArg2 NativeOp env arg -> BackendClusterArg2 NativeOp env arg'
+bpid NoBP = NoBP
+bpid (BP a b c) = BP a b c
+
+instance Eq (BackendClusterArg2 NativeOp env arg) where
+  NoBP == NoBP = True
+  (BP shr1 shr2 f) == (BP shr1' shr2' f')
+    | Just Refl <- matchShapeR shr1 shr1'
+    , Just Refl <- matchShapeR shr2 shr2'
+    = isJust $ matchOpenFun f f'
+  _ == _ = False
+
+
+shrToTypeR :: ShapeR sh -> TypeR sh
+shrToTypeR ShapeRz = TupRunit
+shrToTypeR (ShapeRsnoc shr) = TupRpair (shrToTypeR shr) (TupRsingle scalarType)

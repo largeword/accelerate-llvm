@@ -26,7 +26,7 @@ module Data.Array.Accelerate.LLVM.Native.CodeGen (
 
 -- accelerate
 import Data.Array.Accelerate.Representation.Array
-import Data.Array.Accelerate.Representation.Shape
+import Data.Array.Accelerate.Representation.Shape (empty, shapeType, ShapeR(..))
 import Data.Array.Accelerate.Representation.Type
 import Data.Array.Accelerate.AST.Exp
 import Data.Array.Accelerate.AST.Partitioned
@@ -65,55 +65,25 @@ import LLVM.AST.Type.AddrSpace (defaultAddrSpace)
 import Data.Array.Accelerate.LLVM.CodeGen.Array
 import Data.Array.Accelerate.LLVM.CodeGen.IR (Operands (..), IROP (..))
 import Unsafe.Coerce (unsafeCoerce)
-import Data.Array.Accelerate.LLVM.CodeGen.Sugar (app1)
-import Data.Array.Accelerate.LLVM.CodeGen.Exp (llvmOfFun1)
+import Data.Array.Accelerate.LLVM.CodeGen.Sugar (app1, IRBuffer (IRBuffer))
+import Data.Array.Accelerate.LLVM.CodeGen.Exp (llvmOfFun1, intOfIndex)
 import Data.Array.Accelerate.Trafo.Desugar (ArrayDescriptor(..))
-import Data.Array.Accelerate.LLVM.CodeGen.Arithmetic (ifThenElse, isJust)
-import Control.Monad (when, join)
+import Data.Array.Accelerate.LLVM.CodeGen.Arithmetic (ifThenElse, isJust, when, fromJust, eq)
 import LLVM.AST.Type.Name
 import Data.Array.Accelerate.LLVM.Native.CodeGen.Loop
 import Data.Array.Accelerate.LLVM.CodeGen.Constant (constant)
+import Data.Array.Accelerate.Analysis.Match (matchShapeR)
+import Data.Array.Accelerate.Trafo.Exp.Substitution (compose)
 
--- codegen :: UID -> Env AccessGroundR env -> Cluster NativeOp args -> Args env args -> LLVM Native (Module (KernelType env))
--- codegen uid env cluster args = case clusterOperations cluster args of
---   ClusterOperations _ lhs [ApplyOperation operation args]
---     | Just Refl <- leftHandSideIsVoid lhs
---     , NGenerate <- operation
---     , argF :>: argOut@(ArgArray _ (ArrayR shr _) sh _) :>: ArgsNil <- args
---     -> mkGenerate uid "generate" env argOut argF
---     | otherwise
---     -> internalError "Cannot compile this operation yet"
---   _ -> internalError "Cannot compile this kernel yet"
-
--- codegenN :: UID -> Env AccessGroundR env -> Cluster NativeOp args -> Args env args -> LLVM Native (Module (KernelType env))
--- codegenN uid env cluster args = case clusterOperations cluster args of
---   ClusterOperations extra lhs operations -> let
---     -- the type, code and gamma for the array-level environment
---     (envTp, extractEnv, gamma) = bindEnv env
---     in
---     codeGenFunction uid "cluster" (LLVM.Lam (PtrPrimType envTp defaultAddrSpace) "env") $ do
---       extractEnv
-
---       -- TODO: declare the vertically fused variables
---       undefined extra lhs gamma
-
---       -- TODO: read from input buffers, making a version of 
---       undefined operations gamma
-
---       -- TODO: generate code bodies
---       sequence_ $ undefined <$> operations
-
---       -- TODO: write outputs
---       undefined operations
-
-codegen = codegenEval
-
-codegenEval :: UID 
+-- TODO: this is still singlethreaded
+-- TODO: add 'dimsPerIter' to backendargs, add a counter for depth to the Index type, replace imapNestFromTo with a stack of iterFromTo's 
+--       that each contain two calls to evalCluster (before and after recursive loop) as well as a recursive loop (with the obvious base case).
+codegen :: UID 
             -> Env AccessGroundR env
             -> Cluster NativeOp args
             -> Args env args
             -> LLVM Native (Module (KernelType env))
-codegenEval uid env c args = loopheader $ evalCluster c args gamma
+codegen uid env c args = loopheader $ evalCluster c args gamma
   where
     (envTp, extractEnv, gamma) = bindEnv env
     loopheader loopbody = codeGenFunction uid "name_of_a_fused_cluster" (LLVM.Lam (PtrPrimType envTp defaultAddrSpace) "env") $
@@ -145,7 +115,8 @@ loopsize (Cluster _ (Cluster' io _)) gamma args k = go io args
 
 instance EvalOp NativeOp where
   type EvalMonad NativeOp = CodeGen Native
-  type Index NativeOp = (Operands Int, [Operands Int]) -- linear and multidim index. The second one has 'trust me, this is the right shape' levels of type safety, but trust me. It is the right shape.
+  -- linear and multidim index. The latter has 'trust me, this is the right shape' levels of type safety, but trust me. It is the right shape.
+  type Index NativeOp = (Operands Int, [Operands Int]) 
   type Embed' NativeOp = Operands
   type EnvF NativeOp = GroundOperand
 
@@ -161,18 +132,36 @@ instance EvalOp NativeOp where
   writeOutput tp ~(TupRsingle buf) gamma (i,_) x = writeBuffer tp TypeInt (aprjBuffer (unsafeCoerce buf) gamma) (op TypeInt i) (op tp x)
   readInput tp ~(TupRsingle buf) gamma _ (i,_) = ir tp <$> readBuffer tp TypeInt (aprjBuffer (unsafeCoerce buf) gamma) (op TypeInt i)
 
-  evalOp i NMap gamma (Push (Push (Push Env.Empty (BAE _ NOTHING)) (BAE (Value' x (Shape' shr sh)) NOTHING)) (BAE f NOTHING)) 
+  evalOp i NMap gamma (Push (Push (Push Env.Empty (BAE _ _)) (BAE (Value' x (Shape' shr sh)) _)) (BAE f _)) 
     = Push Env.Empty . FromArg . flip Value' (Shape' shr sh) <$> app1 (llvmOfFun1 @Native f gamma) x
   evalOp i NBackpermute gamma x = error "todo"
-  evalOp i NGenerate gamma (Push (Push Env.Empty (BAE (Shape' shr sh) NOTHING)) (BAE f NOTHING))
+  evalOp i NGenerate gamma (Push (Push Env.Empty (BAE (Shape' shr sh) _)) (BAE f NoBP))
     = Push Env.Empty . FromArg . flip Value' (Shape' shr sh) <$> app1 (llvmOfFun1 @Native f gamma) (multidim shr $ snd i) 
-  evalOp i NPermute gamma (Push (Push (Push (Push Env.Empty (BAE (Value' x (Shape' shrx shx))           NOTHING)) -- input
-                                                            (BAE (flip (llvmOfFun1 @Native) gamma -> f) NOTHING)) -- index function
-                                                            (BAE (ArrayDescriptor shrt sht buft)        NOTHING)) -- target
-                                                            (BAE (flip (llvmOfFun1 @Native) gamma -> c) NOTHING)) -- combination function
-    -- TODO: The type of NPermute is wrong, because it currently doesn't get the input index. 
-    -- Also, should probably change OutArgs to not include Mut.
-    = error "todo"
+  evalOp i NGenerate gamma (Push (Push Env.Empty (BAE (Shape' shr sh) _)) (BAE f (BP shrO shrI idxTransform)))
+    | Just Refl <- matchShapeR shrI shr
+    = Push Env.Empty . FromArg . flip Value' (Shape' shr sh) <$> app1 (llvmOfFun1 @Native (compose f idxTransform) gamma) (multidim shrO $ snd i)
+    | otherwise = error "bp shaper doesn't match generate's output"
+  -- For Permute, we ignore all the BP info here and simply assume that there is none
+  evalOp i NPermute gamma (Push (Push (Push (Push Env.Empty (BAE (Value' x (Shape' shrx shx))           _)) -- input
+                                                            (BAE (flip (llvmOfFun1 @Native) gamma -> f) _)) -- index function
+                                                            (BAE (ArrayDescriptor shrt sht buft)        _)) -- target
+                                                            (BAE (flip (llvmOfFun1 @Native) gamma -> c) _)) -- combination function
+    = do
+          -- TODO: add array of locks to NPermute's type, adapt 'atomically' from Permute.hs
+        -- ix' <- app1 f (multidim shrx $ snd i)
+        -- -- project element onto the destination array and (atomically) update
+        -- when (isJust ix') $ do
+        --   i <- fromJust ix'
+        --   let sht' = aprjParameters (unsafeToExpVars sht) gamma
+        --   j <- intOfIndex shrt sht' i
+
+          -- atomically arrLock j $ do
+          --   y <- readArray TypeInt arrOut j
+          --   r <- app2 c x y
+          --   writeArray TypeInt arrOut j r
+          
+        return Env.Empty
+  evalOp i NScanl1 gamma args = error "todo" -- need to switch the 'imapNestFromTo' to something else
 
 multidim :: ShapeR sh -> [Operands Int] -> Operands sh
 multidim ShapeRz [] = OP_Unit
@@ -199,4 +188,5 @@ unsafeToExpVars (TupRpair l r) = TupRpair (unsafeToExpVars l) (unsafeToExpVars r
 unsafeToExpVars (TupRsingle (Var g idx)) = case g of
   GroundRbuffer _ -> error "unsafeToExpVars on a buffer"
   GroundRscalar t -> TupRsingle (Var t idx)
+
 

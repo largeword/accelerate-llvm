@@ -74,9 +74,9 @@ Library
     Data.Array.Accelerate.LLVM.Native
     Data.Array.Accelerate.LLVM.Native.Plugin
     Data.Array.Accelerate.LLVM.Native.Foreign
+    Data.Array.Accelerate.LLVM.Native.Operation
 
   other-modules:
-    Data.Array.Accelerate.LLVM.Native.Operation
     Data.Array.Accelerate.LLVM.Native.Kernel
 
     Data.Array.Accelerate.LLVM.Native.Debug
@@ -141,6 +141,7 @@ Library
         , llvm-hs                       >= 4.1 && < 14
         , llvm-hs-pure                  >= 4.1 && < 14
         , lockfree-queue                >= 0.2
+        , microlens                     >= 0.4
         , mtl                           >= 2.2.1
         , prettyprinter                 >= 1.7
           -- TODO: These are only used for lifting ByteStrings. bytestring
