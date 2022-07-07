@@ -8,6 +8,7 @@
 -- Portability : non-portable (GHC extensions)
 --
 {-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE ViewPatterns #-}
 module Main where
 
 import Data.Array.Accelerate as A
@@ -20,8 +21,10 @@ import Data.Array.Accelerate.LLVM.Native.Operation
 main :: IO ()
 -- main = nofib runN
 main = do
-  -- print $ test @UniformScheduleFun @InterpretKernel $ complex (use $ fromList (Z:.10) [1 :: Int ..])
-  print $ (run @Native $ zippies (use $ fromList (Z:.1000000) [1 :: Int ..]))
+  -- Currently, SLV is broken and it removes permutes!
+  -- putStrLn $ test @UniformScheduleFun @NativeKernel $ \xs ys -> A.permute @DIM2 @DIM1 @Int (+) xs (const $ Just_ $ I1 0) ys
+  -- putStrLn $ test @UniformScheduleFun @NativeKernel $ A.reverse @Int
+  print $ run @Native $ zippies (use $ fromList (Z:.10) [1 :: Int ..])
 
 -- See the TODO in Solve.hs: the combination of the current naive cost function and not splitting them there,
 -- causes us to make 2 clusters here (even without the zipWith), with the second one consisting of two unrelated maps. Luckily, they
@@ -33,12 +36,13 @@ complex xs = let as = A.map (* 2)             xs
                  ds = A.map (\b -> as ! I1 b) bs
               in A.zipWith (+) cs ds
 
+-- the map correctly doesn't get fused into the zip and reverse kernel
 zippies :: Acc (Vector Int) -> Acc (Vector Int)
-zippies xs = A.zipWith6 (\a b c d e f -> a + b + c + d * e * f)
+zippies (A.map (*2) -> xs) = A.zipWith6 (\a b c d e f -> a + b + c + d + e + f)
   xs
   xs
   xs
   xs
-  xs
+  (A.reverse xs)
   xs
 

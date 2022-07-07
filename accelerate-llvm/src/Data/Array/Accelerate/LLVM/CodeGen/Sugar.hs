@@ -57,6 +57,7 @@ data IROpenFun2 arch env aenv t where
 -- Arrays
 -- ------
 
+-- DVB: cute, but completely irrelevant the way I have Native set up currently
 data IRBuffer e
   = IRBuffer
       -- If the buffer is not fused away, then a pointer to the buffer, its

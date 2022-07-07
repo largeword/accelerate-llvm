@@ -44,9 +44,9 @@ import Data.Array.Accelerate.Trafo.Desugar (desugarAlloc)
 import Data.Array.Accelerate.AST.LeftHandSide
 import Data.Array.Accelerate.Trafo.Exp.Substitution (weakenVars)
 import Data.Array.Accelerate.Trafo.Operation.Substitution (aletUnique, alet, weaken)
-import Data.Array.Accelerate.Representation.Shape (ShapeR (..))
+import Data.Array.Accelerate.Representation.Shape (ShapeR (..), shapeType)
 import Data.Array.Accelerate.Representation.Type (TypeR, TupR (..))
-import Data.Array.Accelerate.Type (scalarType)
+import Data.Array.Accelerate.Type (scalarType, Word8, scalarTypeWord8)
 import Data.Array.Accelerate.Analysis.Match
 import Data.Array.Accelerate.Trafo.Substitution (compose)
 import Data.Maybe (isJust)
@@ -54,6 +54,8 @@ import Data.Array.Accelerate.Interpreter (InOut (..))
 import qualified Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph as Graph
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solver
 import Lens.Micro
+import qualified Debug.Trace
+import qualified Data.Map as M
 
 
 data NativeOp op where
@@ -62,6 +64,7 @@ data NativeOp op where
   NGenerate    :: NativeOp (Fun' (sh -> t)              -> Out sh  t -> ())
   NPermute     :: NativeOp (Fun' (e -> e -> e)
                             -> Mut sh' e
+                            -> Mut sh' Word8
                             -> Fun' (sh -> PrimMaybe sh')
                             -> In sh e
                             -> ())
@@ -94,7 +97,22 @@ instance DesugarAcc NativeOp where
   -- right to left is conceptually easy once we already have order variables for backpermute. 
   -- Exclusive scans (changing array size) are weirder, require an extra 'cons' primitive
   mkScan _ _ _ _ _ = error "todo" 
-  mkPermute     a b c d = Exec NPermute (a :>: b :>: c :>: d :>: ArgsNil)
+  mkPermute     a b@(ArgArray _ (ArrayR shr _) sh _) c d
+    | DeclareVars lhs w lock <- declareVars $ buffersR $ TupRsingle scalarTypeWord8
+    = Debug.Trace.trace "hello??" $ aletUnique lhs 
+        (Alloc shr scalarTypeWord8 $ groundToExpVar (shapeType shr) sh)
+        $ alet LeftHandSideUnit
+          (Exec NGenerate ( -- The old pipeline used a 'memset 0' instead, which sounds faster...
+                ArgFun (Lam (LeftHandSideWildcard (shapeType shr)) $ Body $ Const scalarTypeWord8 0)
+            :>: ArgArray Out (ArrayR shr (TupRsingle scalarTypeWord8)) (weakenVars w sh) (lock weakenId) 
+            :>: ArgsNil))
+          (Exec NPermute (
+                weaken w a 
+            :>: weaken w b 
+            :>: ArgArray Mut (ArrayR shr (TupRsingle scalarTypeWord8)) (weakenVars w sh) (lock weakenId) 
+            :>: weaken w c 
+            :>: weaken w d 
+            :>: ArgsNil))
 
 instance SimplifyOperation NativeOp where
   detectCopy _          NMap         = detectMapCopies
@@ -109,9 +127,10 @@ instance SLVOperation NativeOp where
 
 instance EncodeOperation NativeOp where
   encodeOperation NMap         = intHost $(hashQ ("Map" :: String))
-  encodeOperation NBackpermute = intHost $(hashQ ("Map" :: String))
-  encodeOperation NGenerate    = intHost $(hashQ ("Map" :: String))
-  encodeOperation NPermute     = intHost $(hashQ ("Map" :: String))
+  encodeOperation NBackpermute = intHost $(hashQ ("Backpermute" :: String))
+  encodeOperation NGenerate    = intHost $(hashQ ("Generate" :: String))
+  encodeOperation NPermute     = intHost $(hashQ ("Permute" :: String))
+  encodeOperation NScanl1      = intHost $(hashQ ("Scanl1" :: String))
 
 -- -3 can't fuse with anything, -2 for 'left to right', -1 for 'right to left', n for 'unpredictable, see computation n' (currently only backpermute)
 data NativeILPVar = Order InOut  Label
@@ -122,7 +141,7 @@ pattern OutDir l = BackendSpecific (Order OutArr l)
 
 instance MakesILP NativeOp where
   type BackendVar NativeOp = NativeILPVar
-  type BackendArg NativeOp = ()
+  type BackendArg NativeOp = Int -- the Order, to ensure that multiple uses of the same array in different orders get separate array reads
   data BackendClusterArg NativeOp a = None
 
   mkGraph NBackpermute (_ :>: L _ (_, lIns) :>: _ :>: ArgsNil) l@(Label i _) =
@@ -142,16 +161,18 @@ instance MakesILP NativeOp where
       (    inputConstraints l lIns
         <> c (InDir l) .==. c (OutDir l))
       (defaultBounds l)
-  mkGraph NPermute (_ :>: L _ (_, lTargets) :>: _ :>: L _ (_, lIns) :>: ArgsNil) l =
+  mkGraph NPermute (_ :>: L _ (_, lTargets) :>: L _ (_, lLocks) :>: _ :>: L _ (_, lIns) :>: ArgsNil) l =
     Graph.Info
-      ( mempty & infusibleEdges .~ Set.map (-?> l) lTargets) -- add infusible edges from the producer of target array to the permute
+      ( mempty & infusibleEdges .~ Set.map (-?> l) (lTargets <> lLocks)) -- add infusible edges from the producers of target and lock arrays to the permute
       (    inputConstraints l lIns
         <> c (OutDir l) .==. int (-3)) -- Permute cannot fuse with its consumer
       ( lower (-2) (InDir l)) -- default lowerbound for the input, but not for the output (as we set it to -3)
   mkGraph NScanl1 (_ :>: L _ (_, lIns) :>: _ :>: _ :>: ArgsNil) l =
     undefined
 
-  labelLabelledArg _ _ (L x y) = LOp x y ()
+  labelLabelledArg vars l (L x@(ArgArray In  _ _ _) y) = LOp x y $ vars M.! Order InArr  l
+  labelLabelledArg vars l (L x@(ArgArray Out _ _ _) y) = LOp x y $ vars M.! Order OutArr l
+  labelLabelledArg _ _ (L x y) = LOp x y 0
   getClusterArg _ = None
   -- For each label: If the output is manifest, then its direction is negative (i.e. not in a backpermuted order)
   finalize = foldMap $ \l -> timesN (manifest l) .>. c (OutDir l)
@@ -198,10 +219,10 @@ instance StaticClusterAnalysis NativeOp where
     | Just Refl <- matchShapeR shrO shr2  = NoBP :>: BP shr1 shrI (compose f g) :>: BP shr1 shr2 g :>: ArgsNil
     | otherwise = error "BP shapeR doesn't match backpermute output shape"
   onOp NBackpermute (NoBP           :>: ArgsNil) (ArgFun f :>: ArgArray In (ArrayR shrI _) _ _ :>: ArgArray Out (ArrayR shrO _) _ _ :>: ArgsNil) _
-                                          = NoBP :>: BP shrO shrI f             :>: NoBP           :>: ArgsNil    
+                                          = Debug.Trace.trace "making bp" $ NoBP :>: BP shrO shrI f             :>: NoBP           :>: ArgsNil    
   onOp NGenerate (BP a b c :>: ArgsNil) _ _ = BP a b c :>: BP a b c :>: ArgsNil -- storing the bp in the function argument. Probably not required, could just take it from the array one during codegen
   onOp NGenerate (NoBP     :>: ArgsNil) _ _ = NoBP     :>: NoBP     :>: ArgsNil
-  onOp NPermute ArgsNil _ _ = NoBP :>: NoBP :>: NoBP :>: NoBP :>: ArgsNil
+  onOp NPermute ArgsNil _ _ = NoBP :>: NoBP :>: NoBP :>: NoBP :>: NoBP :>: ArgsNil
   onOp _ _ _ _ = error "todo"
 
 bpid :: BackendClusterArg2 NativeOp env arg -> BackendClusterArg2 NativeOp env arg'

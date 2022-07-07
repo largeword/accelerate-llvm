@@ -65,8 +65,8 @@ import LLVM.AST.Type.AddrSpace (defaultAddrSpace)
 import Data.Array.Accelerate.LLVM.CodeGen.Array
 import Data.Array.Accelerate.LLVM.CodeGen.IR (Operands (..), IROP (..))
 import Unsafe.Coerce (unsafeCoerce)
-import Data.Array.Accelerate.LLVM.CodeGen.Sugar (app1, IRBuffer (IRBuffer))
-import Data.Array.Accelerate.LLVM.CodeGen.Exp (llvmOfFun1, intOfIndex)
+import Data.Array.Accelerate.LLVM.CodeGen.Sugar (app1, IRBuffer (IRBuffer), IROpenFun2 (app2))
+import Data.Array.Accelerate.LLVM.CodeGen.Exp (llvmOfFun1, intOfIndex, llvmOfFun2)
 import Data.Array.Accelerate.Trafo.Desugar (ArrayDescriptor(..))
 import Data.Array.Accelerate.LLVM.CodeGen.Arithmetic (ifThenElse, isJust, when, fromJust, eq)
 import LLVM.AST.Type.Name
@@ -74,11 +74,15 @@ import Data.Array.Accelerate.LLVM.Native.CodeGen.Loop
 import Data.Array.Accelerate.LLVM.CodeGen.Constant (constant)
 import Data.Array.Accelerate.Analysis.Match (matchShapeR)
 import Data.Array.Accelerate.Trafo.Exp.Substitution (compose)
+import Data.Array.Accelerate.Array.Buffer (readBuffers)
+import LLVM.Internal.FFI.LLVMCTypes (libFunc__printf)
+import Data.Array.Accelerate.AST.Operation (groundToExpVar)
+import qualified Debug.Trace
 
 -- TODO: this is still singlethreaded
 -- TODO: add 'dimsPerIter' to backendargs, add a counter for depth to the Index type, replace imapNestFromTo with a stack of iterFromTo's 
 --       that each contain two calls to evalCluster (before and after recursive loop) as well as a recursive loop (with the obvious base case).
-codegen :: UID 
+codegen :: UID
             -> Env AccessGroundR env
             -> Cluster NativeOp args
             -> Args env args
@@ -116,7 +120,7 @@ loopsize (Cluster _ (Cluster' io _)) gamma args k = go io args
 instance EvalOp NativeOp where
   type EvalMonad NativeOp = CodeGen Native
   -- linear and multidim index. The latter has 'trust me, this is the right shape' levels of type safety, but trust me. It is the right shape.
-  type Index NativeOp = (Operands Int, [Operands Int]) 
+  type Index NativeOp = (Operands Int, [Operands Int])
   type Embed' NativeOp = Operands
   type EnvF NativeOp = GroundOperand
 
@@ -129,37 +133,47 @@ instance EvalOp NativeOp where
   subtup (SubTupRpair a b) (OP_Pair x y) = OP_Pair (subtup @NativeOp a x) (subtup @NativeOp b y)
 
   -- the scalartypes guarantee that there is always only one buffer. Same for the unsafeCoerce from (Buffers e) to (Buffer e)
-  writeOutput tp ~(TupRsingle buf) gamma (i,_) x = writeBuffer tp TypeInt (aprjBuffer (unsafeCoerce buf) gamma) (op TypeInt i) (op tp x)
-  readInput tp ~(TupRsingle buf) gamma _ (i,_) = ir tp <$> readBuffer tp TypeInt (aprjBuffer (unsafeCoerce buf) gamma) (op TypeInt i)
+  writeOutput tp sh ~(TupRsingle buf) gamma (i,_) x = writeBuffer tp TypeInt (aprjBuffer (unsafeCoerce buf) gamma) (op TypeInt i) (op tp x)
+  readInput :: forall e env sh. ScalarType e -> GroundVars env sh -> GroundVars env (Buffers e) -> Gamma env -> BackendClusterArg2 NativeOp env (In sh e) -> (Operands Int, [Operands Int]) -> CodeGen Native (Operands e)
+  readInput tp sh ~(TupRsingle buf) gamma NoBP                             (i, _) = Debug.Trace.trace "nobp" $ ir tp <$> readBuffer tp TypeInt (aprjBuffer (unsafeCoerce buf) gamma) (op TypeInt i)
+  readInput tp sh ~(TupRsingle buf) gamma (BP shr1 (shr2 :: ShapeR sh2) f) (_,ix) = Debug.Trace.trace "bp" $ do
+    sh2 <- app1 (llvmOfFun1 @Native f gamma) $ multidim shr1 ix
+    let sh' = unsafeCoerce @(GroundVars env sh) @(GroundVars env sh2) sh -- "trust me", the shapeR in the BP should match the shape of the buffer
+    let sh'' = aprjParameters (groundToExpVar (shapeType shr2) sh') gamma
+    i <- intOfIndex shr2 sh'' sh2
+    ir tp <$> readBuffer tp TypeInt (aprjBuffer (unsafeCoerce buf) gamma) (op TypeInt i)
 
-  evalOp i NMap gamma (Push (Push (Push Env.Empty (BAE _ _)) (BAE (Value' x (Shape' shr sh)) _)) (BAE f _)) 
+  evalOp _ NMap gamma (Push (Push (Push Env.Empty (BAE _ _)) (BAE (Value' x (Shape' shr sh)) _)) (BAE f _))
     = Push Env.Empty . FromArg . flip Value' (Shape' shr sh) <$> app1 (llvmOfFun1 @Native f gamma) x
-  evalOp i NBackpermute gamma x = error "todo"
+  evalOp _ NBackpermute gamma (Push (Push (Push Env.Empty (BAE (Shape' shr sh) _)) (BAE (Value' x _) _)) _)
+    = pure $ Push Env.Empty $ FromArg $ Value' x $ Shape' shr sh
   evalOp i NGenerate gamma (Push (Push Env.Empty (BAE (Shape' shr sh) _)) (BAE f NoBP))
-    = Push Env.Empty . FromArg . flip Value' (Shape' shr sh) <$> app1 (llvmOfFun1 @Native f gamma) (multidim shr $ snd i) 
+    = Push Env.Empty . FromArg . flip Value' (Shape' shr sh) <$> app1 (llvmOfFun1 @Native f gamma) (multidim shr $ snd i)
   evalOp i NGenerate gamma (Push (Push Env.Empty (BAE (Shape' shr sh) _)) (BAE f (BP shrO shrI idxTransform)))
     | Just Refl <- matchShapeR shrI shr
     = Push Env.Empty . FromArg . flip Value' (Shape' shr sh) <$> app1 (llvmOfFun1 @Native (compose f idxTransform) gamma) (multidim shrO $ snd i)
-    | otherwise = error "bp shaper doesn't match generate's output"
+    | otherwise = error "bp shapeR doesn't match generate's output"
   -- For Permute, we ignore all the BP info here and simply assume that there is none
-  evalOp i NPermute gamma (Push (Push (Push (Push Env.Empty (BAE (Value' x (Shape' shrx shx))           _)) -- input
-                                                            (BAE (flip (llvmOfFun1 @Native) gamma -> f) _)) -- index function
-                                                            (BAE (ArrayDescriptor shrt sht buft)        _)) -- target
-                                                            (BAE (flip (llvmOfFun1 @Native) gamma -> c) _)) -- combination function
+  evalOp i NPermute gamma (Push (Push (Push (Push (Push Env.Empty
+    (BAE (Value' x (Shape' shrx shx))           _)) -- input
+    (BAE (flip (llvmOfFun1 @Native) gamma -> f) _)) -- index function
+    (BAE (ArrayDescriptor shrl shl bufl, lty)   _)) -- lock
+    (BAE (ArrayDescriptor shrt sht buft, tty)   _)) -- target
+    (BAE (flip (llvmOfFun2 @Native) gamma -> c) _)) -- combination function
     = do
-          -- TODO: add array of locks to NPermute's type, adapt 'atomically' from Permute.hs
-        -- ix' <- app1 f (multidim shrx $ snd i)
-        -- -- project element onto the destination array and (atomically) update
+        ix' <- app1 f (multidim shrx $ snd i)
+        -- project element onto the destination array and (atomically) update
         -- when (isJust ix') $ do
-        --   i <- fromJust ix'
-        --   let sht' = aprjParameters (unsafeToExpVars sht) gamma
-        --   j <- intOfIndex shrt sht' i
+        do
+          ix <- fromJust ix'
+          let sht' = aprjParameters (unsafeToExpVars sht) gamma
+          j <- intOfIndex shrt sht' ix
 
-          -- atomically arrLock j $ do
-          --   y <- readArray TypeInt arrOut j
-          --   r <- app2 c x y
-          --   writeArray TypeInt arrOut j r
-          
+          -- atomically gamma (ArgArray Mut (ArrayR shrl lty) shl bufl) j $ do
+          do
+            y <- readArray TypeInt gamma (ArgArray Mut (ArrayR shrt tty) sht buft) j
+            r <- app2 c x y
+            writeArray TypeInt gamma (ArgArray Mut (ArrayR shrt tty) sht buft) j r
         return Env.Empty
   evalOp i NScanl1 gamma args = error "todo" -- need to switch the 'imapNestFromTo' to something else
 

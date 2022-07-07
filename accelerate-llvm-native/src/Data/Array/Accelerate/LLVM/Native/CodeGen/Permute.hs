@@ -49,6 +49,8 @@ import LLVM.AST.Type.Representation
 import Control.Applicative
 import Control.Monad                                                ( void )
 import Prelude
+import Data.Array.Accelerate.AST.Operation (Mut, Arg (ArgArray), Modifier (Mut), Var (Var))
+import Data.Array.Accelerate.AST.Environment (prj')
 
 {-
 -- Forward permutation specified by an indexing mapping. The resulting array is
@@ -303,3 +305,50 @@ reprOut (ArrayR _ tp) shr = ArrayR shr tp
 reprLock :: ArrayR (Array ((), Int) Word8)
 reprLock = ArrayR (ShapeRsnoc ShapeRz) $ TupRsingle scalarTypeWord8
 -}
+
+
+atomically 
+  :: Gamma env
+  -> Arg env (Mut sh' Word8)
+  -> Operands Int 
+  -> CodeGen Native () 
+  -> CodeGen Native ()
+atomically gamma (ArgArray Mut (ArrayR shr _) sh (TupRsingle (Var _ bufidx))) i action = 
+  case prj' bufidx gamma of
+    GroundOperandParam _ -> error "impossible"
+    GroundOperandBuffer (IRBuffer Nothing _) -> error "fused away the mutable lock array?"
+    GroundOperandBuffer (IRBuffer (Just (bufptr, _ , _)) _) -> do
+      let
+          lock      = integral integralType 1
+          unlock    = integral integralType 0
+          unlocked  = ir TypeWord8 unlock
+      --
+      spin <- newBlock "spinlock.entry"
+      crit <- newBlock "spinlock.critical-section"
+      exit <- newBlock "spinlock.exit"
+
+      addr <- instr' $ GetElementPtr bufptr [op integralType i]
+      _    <- br spin
+
+      -- Atomically (attempt to) set the lock slot to the locked state. If the slot
+      -- was unlocked we just acquired it, otherwise the state remains unchanged and
+      -- we spin until it becomes available.
+      setBlock spin
+      old  <- instr $ AtomicRMW numType NonVolatile Exchange addr lock   (CrossThread, Acquire)
+      ok   <- A.eq singleType old unlocked
+      _    <- cbr ok crit spin
+
+      -- We just acquired the lock; perform the critical section then release the
+      -- lock and exit. For ("some") x86 processors, an unlocked MOV instruction
+      -- could be used rather than the slower XCHG, due to subtle memory ordering
+      -- rules.
+      setBlock crit
+      r    <- action
+      _    <- instr $ AtomicRMW numType NonVolatile Exchange addr unlock (CrossThread, Release)
+      _    <- br exit
+
+      setBlock exit
+      return r
+    
+
+
