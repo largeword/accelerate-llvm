@@ -216,7 +216,18 @@ workstealLoop counter activeThreads size doWork = do
   -- Note that there may be multiple threads returning true here.
   -- It is guaranteed that at least one thread returns true.
   allDone <- eq singleType (OP_Int32 remaining) (liftInt32 1)
-  retval_ $ op BoolPrimType allDone
+  cbr allDone exitLast finished
+
+  setBlock exitLast
+  -- Use compare-and-set to change the active-threads counter to 1:
+  --  * Out of all threads that currently see an active-thread count of 0, only
+  --    1 will succeed the CAS.
+  --  * Given that the counter is artifically increased here, no other thread
+  --    will see the counter ever drop to 0.
+  -- Hence we get a unique thread to continue the computation after this kernel.
+  casResult <- instr' $ CmpXchg TypeInt32 NonVolatile activeThreads (integral TypeInt32 0) (integral TypeInt32 1) (CrossThread, Monotonic) Monotonic
+  last <- instr' $ ExtractValue primType (TupleIdxRight TupleIdxSelf) casResult
+  retval_ last
 
   setBlock finished
   -- Work was already finished

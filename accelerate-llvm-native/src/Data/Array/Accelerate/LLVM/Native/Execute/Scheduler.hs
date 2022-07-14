@@ -94,6 +94,10 @@ data Activity where
 
 type ThreadIdx = Int
 
+instance Show Activity where
+  show Inactive = "Inactive"
+  show (Active _ fun ptr _) = "Active " ++ show fun ++ " " ++ show ptr
+
 -- Schedule a job to be executed by the worker threads. May be called
 -- concurrently.
 --
@@ -263,21 +267,24 @@ executeKernel !workers !myIdx (KernelCall fun arg) continuation = do
   wakeAll $ workerSleep workers
   helpKernel workers myIdx myIdx (return ()) (return ())
 
+{-# INLINE helpKernel #-}
 helpKernel :: Workers -> ThreadIdx -> ThreadIdx -> IO () -> IO () -> IO ()
 helpKernel !workers !myIdx !otherIdx !whenInactive !afterActive = do
   ticket <- readArrayElem (workerActivity workers) otherIdx
   case peekTicket ticket of
     Inactive -> whenInactive
     Active (Proxy :: Proxy env) fun arg continuation -> do
-      putStrLn ("Help " ++ show (myIdx, otherIdx))
-      finished <- callKernel @env fun arg
-      when finished $ do
-        -- All the work is finished. There might be multiple thread that get
-        -- 'True' here. We choose one thread of them, by doing compare-and-swap
-        -- and seeing for which thread that succeeded.
-        --
-        (last, _) <- casArrayElem (workerActivity workers) otherIdx ticket Inactive
-        when last (runJob continuation myIdx)
+      isLast <- callKernel @env fun arg
+      
+      -- Store 'Inactive' in the array
+      -- This uses a CAS as the thread which we help may already have progressed
+      -- and started working on a new task.
+      -- Note that this CAS is only required for helping threads. If we duplicate
+      -- this function, with a variant for helping threads and one for the starting
+      -- thread, then we could avoid the CAS in the latter.
+      _ <- casArrayElem (workerActivity workers) otherIdx ticket Inactive
+
+      when isLast (runJob continuation myIdx)
       afterActive
 
 -- Schedules a job to be executed when the given signals are resolved.
