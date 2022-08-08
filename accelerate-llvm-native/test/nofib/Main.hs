@@ -9,6 +9,7 @@
 --
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE ViewPatterns #-}
+{-# LANGUAGE FlexibleContexts #-}
 module Main where
 
 import Data.Array.Accelerate as A
@@ -21,10 +22,12 @@ import Data.Array.Accelerate.LLVM.Native.Operation
 main :: IO ()
 -- main = nofib runN
 main = do
+  -- Currently, it seems that operations with a SoA array input (i.e. a map or backpermute over an array of pairs) crash
+  
   -- Currently, SLV is broken and it removes permutes!
   -- putStrLn $ test @UniformScheduleFun @NativeKernel $ \xs ys -> A.permute @DIM2 @DIM1 @Int (+) xs (const $ Just_ $ I1 0) ys
-  -- putStrLn $ test @UniformScheduleFun @NativeKernel $ A.reverse @Int
-  print $ run @Native $ zippies (use $ fromList (Z:.10) [1 :: Int ..])
+  putStrLn $ test @UniformScheduleFun @NativeKernel $ foo
+  print $ run @Native $ foo (use $ fromList (Z:.10) [1 :: Int ..])
 
 -- See the TODO in Solve.hs: the combination of the current naive cost function and not splitting them there,
 -- causes us to make 2 clusters here (even without the zipWith), with the second one consisting of two unrelated maps. Luckily, they
@@ -46,3 +49,26 @@ zippies (A.map (*2) -> xs) = A.zipWith6 (\a b c d e f -> a + b + c + d + e + f)
   (A.reverse xs)
   xs
 
+reverses :: Acc (Vector Int) -> Acc (Vector Int, Vector Int)
+reverses xs = let
+  xs' = A.reverse xs
+  a   = A.zip xs xs'
+  b   = A.reverse a
+  (c, d) = A.unzip b
+  in T2 c (A.reverse d)
+
+
+foo :: Acc (Vector Int) -> Acc (Vector (Int, Int))
+foo =  A.map (\x -> T2 (x-1) (x+1))
+
+-- A version of awhile that generates more code, as we duplicate the condition, but this allows it to fuse the condition into the body
+awhileFuse :: Arrays a 
+           => (Acc a -> Acc (Scalar Bool))    -- ^ keep evaluating while this returns 'True'
+           -> (Acc a -> Acc a)                -- ^ function to apply
+           -> Acc a                           -- ^ initial value
+           -> Acc a
+awhileFuse c f x = asnd $ A.awhile c' f' x'
+  where
+    x' = T2 (c x) x
+    c' (T2 cond _) = cond
+    f' (T2 _ value) = let value' = f value in T2 (c value') value'

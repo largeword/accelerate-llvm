@@ -139,6 +139,10 @@ pattern InDir, OutDir :: Label -> Graph.Var NativeOp
 pattern InDir  l = BackendSpecific (Order  InArr l)
 pattern OutDir l = BackendSpecific (Order OutArr l)
 
+
+-- TODO: factor out more common parts of mkGraph
+-- TODO: do the TODO's in here, and also do them in the Interpreter
+-- TODO: enforce that all buffers that together make up an array (say, as input of a Map) all have the same order
 instance MakesILP NativeOp where
   type BackendVar NativeOp = NativeILPVar
   type BackendArg NativeOp = Int -- the Order, to ensure that multiple uses of the same array in different orders get separate array reads
@@ -148,7 +152,7 @@ instance MakesILP NativeOp where
     Graph.Info
       mempty
       (    inputConstraints l lIns
-        <> c (InDir l) .==. int i)
+        <> c (InDir l) .==. int i) -- TODO: incorporate the order of the output here too: InDir l .==. int i .+. nTimes (OutDir l) --- actually, maybe there is no need? Think about this another two times :)
       (defaultBounds l)
   mkGraph NGenerate _ l =
     Graph.Info
