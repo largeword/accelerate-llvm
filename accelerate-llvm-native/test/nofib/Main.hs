@@ -23,23 +23,33 @@ import Control.Monad
 
 main :: IO ()
 -- main = nofib runN
-main = do
-  -- Currently, it seems that operations with a SoA array input (i.e. a map or backpermute over an array of pairs) crash
-
+main = 
   -- Currently, SLV is broken and it removes permutes!
   -- putStrLn $ test @UniformScheduleFun @NativeKernel $ \xs ys -> A.permute @DIM2 @DIM1 @Int (+) xs (const $ Just_ $ I1 0) ys
   -- putStrLn $ test @UniformScheduleFun @NativeKernel $ diagonal'
-  putStrLn $ Prelude.take 50 $ show $ runN @Native $ complex (use $ fromList (Z:.1024*1024) [1 :: Int ..])
+  -- print $ flip linearIndexArray 0 . Prelude.fst $ runN @Native $ complex (use $ fromList (Z:.1024) [1 :: Int ..])
 
   -- benchmarking:
-  -- let xs = fromList (Z:.1024) [1 :: Int ..]
-  -- defaultMain [
-  --   bgroup "complex" 
-  --     [ env (pure (runN @Native complex , xs)) $ \ ~(program, input) -> bench "new" $ nf program input
-  --     -- , env (pure (runN @Native complex', xs)) $ \ ~(program, input) -> bench "old" $ nf program input
-  --     ]
-  --   ]
-
+  defaultMain 
+    [ benchsize 1
+    , benchsize 32
+    , benchsize 64
+    -- , benchsize (1024*1024)      
+    ]
+  where 
+    xs n = fromList (Z:.n) [1 :: Int ..]
+    benchsize n = bgroup (show n)
+      -- we force the result by indexing into a result array and forcing that number. 
+      -- some benchmarks return two arrays, so we simply index in the first one
+      [ env (return (xs n, flip linearIndexArray 0 . Prelude.fst . runN @Native complex    )) $ (\ ~(xs, p) -> bench "complex    " $ nf p xs) 
+      , env (return (xs n, flip linearIndexArray 0 . Prelude.fst . runN @Native complex'   )) $ (\ ~(xs, p) -> bench "complex'   " $ nf p xs) 
+      , env (return (xs n, flip linearIndexArray 0               . runN @Native complexAdd )) $ (\ ~(xs, p) -> bench "complexAdd " $ nf p xs) 
+      , env (return (xs n, flip linearIndexArray 0               . runN @Native complexAdd')) $ (\ ~(xs, p) -> bench "complexAdd'" $ nf p xs)         
+      , env (return (xs n, flip linearIndexArray 0               . runN @Native singleLoop )) $ (\ ~(xs, p) -> bench "singleLoop " $ nf p xs)         
+      , env (return (xs n, flip linearIndexArray 0               . runN @Native singleLoop')) $ (\ ~(xs, p) -> bench "singleLoop'" $ nf p xs) 
+      , env (return (xs n, flip linearIndexArray 0 . Prelude.fst . runN @Native diagonal   )) $ (\ ~(xs, p) -> bench "diagonal   " $ nf p xs) 
+      , env (return (xs n, flip linearIndexArray 0 . Prelude.fst . runN @Native diagonal'  )) $ (\ ~(xs, p) -> bench "diagonal'  " $ nf p xs) 
+      ]
 
 ----------------------------BENCHMARKS------------------------------
 -- complex      from the ILP example
