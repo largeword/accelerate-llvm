@@ -57,7 +57,7 @@ prepareKernel env (NativeKernelMetadata envSize) fun args = do
   foreignPtr :: ForeignPtr () <- mallocPlainForeignPtrAlignedBytes (cacheLineSize * 2 + envSize) (cacheLineSize * 2)
 
   withForeignPtr foreignPtr $ \argPtr -> do
-    putStrLn "Trying to launch kernel"
+    -- putStrLn "Trying to launch kernel"
 
     -- Initialise 'worksteal index' to 0
     poke (castPtr argPtr) (0 :: Int32)

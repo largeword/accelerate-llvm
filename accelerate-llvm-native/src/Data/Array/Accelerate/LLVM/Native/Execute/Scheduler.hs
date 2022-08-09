@@ -269,7 +269,7 @@ helpKernel !workers !myIdx !otherIdx !whenInactive !afterActive = do
   case peekTicket ticket of
     Inactive -> whenInactive
     Active (Proxy :: Proxy env) fun arg continuation -> do
-      putStrLn ("Help " ++ show (myIdx, otherIdx))
+      -- putStrLn ("Help " ++ show (myIdx, otherIdx))
       finished <- callKernel @env fun arg
       when finished $ do
         -- All the work is finished. There might be multiple thread that get

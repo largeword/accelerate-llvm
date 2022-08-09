@@ -135,8 +135,8 @@ instance EvalOp NativeOp where
   -- the scalartypes guarantee that there is always only one buffer. Same for the unsafeCoerce from (Buffers e) to (Buffer e)
   writeOutput tp sh ~(TupRsingle buf) gamma (i,_) x = writeBuffer tp TypeInt (aprjBuffer (unsafeCoerce buf) gamma) (op TypeInt i) (op tp x)
   readInput :: forall e env sh. ScalarType e -> GroundVars env sh -> GroundVars env (Buffers e) -> Gamma env -> BackendClusterArg2 NativeOp env (In sh e) -> (Operands Int, [Operands Int]) -> CodeGen Native (Operands e)
-  readInput tp sh ~(TupRsingle buf) gamma NoBP                             (i, _) = Debug.Trace.trace "nobp" $ ir tp <$> readBuffer tp TypeInt (aprjBuffer (unsafeCoerce buf) gamma) (op TypeInt i)
-  readInput tp sh ~(TupRsingle buf) gamma (BP shr1 (shr2 :: ShapeR sh2) f) (_,ix) = Debug.Trace.trace "bp" $ do
+  readInput tp sh ~(TupRsingle buf) gamma NoBP                             (i, _) = ir tp <$> readBuffer tp TypeInt (aprjBuffer (unsafeCoerce buf) gamma) (op TypeInt i)
+  readInput tp sh ~(TupRsingle buf) gamma (BP shr1 (shr2 :: ShapeR sh2) f) (_,ix) = do
     sh2 <- app1 (llvmOfFun1 @Native f gamma) $ multidim shr1 ix
     let sh' = unsafeCoerce @(GroundVars env sh) @(GroundVars env sh2) sh -- "trust me", the shapeR in the BP should match the shape of the buffer
     let sh'' = aprjParameters (groundToExpVar (shapeType shr2) sh') gamma

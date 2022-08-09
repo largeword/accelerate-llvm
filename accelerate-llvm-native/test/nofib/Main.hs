@@ -18,26 +18,102 @@ import Data.Array.Accelerate.Interpreter
 -- import Data.Array.Accelerate.Test.NoFib
 import Data.Array.Accelerate.LLVM.Native
 import Data.Array.Accelerate.LLVM.Native.Operation
+import Criterion.Main
 
 main :: IO ()
 -- main = nofib runN
 main = do
   -- Currently, it seems that operations with a SoA array input (i.e. a map or backpermute over an array of pairs) crash
-  
+
   -- Currently, SLV is broken and it removes permutes!
   -- putStrLn $ test @UniformScheduleFun @NativeKernel $ \xs ys -> A.permute @DIM2 @DIM1 @Int (+) xs (const $ Just_ $ I1 0) ys
-  putStrLn $ test @UniformScheduleFun @NativeKernel $ foo
-  print $ run @Native $ foo (use $ fromList (Z:.10) [1 :: Int ..])
+  -- putStrLn $ test @UniformScheduleFun @NativeKernel $ diagonal'
+  -- print $ run @Native $ complex (use $ fromList (Z:.1024*1024) [1 :: Int ..])
 
--- See the TODO in Solve.hs: the combination of the current naive cost function and not splitting them there,
--- causes us to make 2 clusters here (even without the zipWith), with the second one consisting of two unrelated maps. Luckily, they
--- do have the same size, so it works out fine for Native :)
-complex :: Acc (Vector Int) -> Acc (Vector Int)
-complex xs = let as = A.map (* 2)             xs
-                 bs = A.map (+ 3)             xs
-                 cs = A.map (\a -> bs ! I1 a) as
-                 ds = A.map (\b -> as ! I1 b) bs
-              in A.zipWith (+) cs ds
+  -- benchmarking:
+  let xs = fromList (Z:.1024) [1 :: Int ..]
+  defaultMain [
+    bgroup "complex" 
+      [ env (pure (runN @Native complex , xs)) $ \ ~(program, input) -> bench "new" $ nf program input
+      -- , env (pure (runN @Native complex', xs)) $ \ ~(program, input) -> bench "old" $ nf program input
+      ]
+    ]
+
+
+----------------------------BENCHMARKS------------------------------
+-- complex      from the ILP example
+-- complexAdd   a variation on complex, where the results are zipWith-ed together
+-- singleLoop   from the introduction
+-- diagonal     two maps, fused diagonally
+--------------------------------------------------------------------
+
+complex :: Acc (Vector Int) -> Acc (Vector Int, Vector Int)
+complex xs = 
+  let as = A.map (* 2)             xs
+      bs = A.map (+ 3)             xs
+      cs = A.map (\a -> bs ! I1 a) as
+      ds = A.map (\b -> as ! I1 b) bs
+  in T2 cs ds
+
+complex' :: Acc (Vector Int) -> Acc (Vector Int, Vector Int)
+complex' xs = 
+  let as = A.map (* 2)             $ xs
+      bs = A.map (+ 3)             $ barrier xs
+      cs = A.map (\a -> bs ! I1 a) $ barrier as
+      ds = A.map (\b -> as ! I1 b) $ barrier bs
+    in T2 cs ds
+
+
+complexAdd :: Acc (Vector Int) -> Acc (Vector Int)
+complexAdd xs = 
+  let as = A.map (* 2)             xs
+      bs = A.map (+ 3)             xs
+      cs = A.map (\a -> bs ! I1 a) as
+      ds = A.map (\b -> as ! I1 b) bs
+    in A.zipWith (+) cs ds
+
+complexAdd' :: Acc (Vector Int) -> Acc (Vector Int)
+complexAdd' xs = 
+  let as = A.map (* 2)             $ xs
+      bs = A.map (+ 3)             $ barrier xs
+      cs = A.map (\a -> bs ! I1 a) $ barrier as
+      ds = A.map (\b -> as ! I1 b) $ barrier bs
+    in A.zipWith (+) cs ds
+
+singleLoop :: Acc (Vector Int) -> Acc (Vector Int)
+singleLoop as =
+  let bs = A.reverse  as
+      cs = A.map (+1) as
+      ds = A.map (*2) cs
+  in  A.zipWith3 (\b c d -> b + c + d) bs cs ds
+
+-- mimicking delayed arrays: One cluster computing @cs@, and one with the zipWith3 that has @bs@ and @ds@ vertically fused.
+singleLoop' :: Acc (Vector Int) -> Acc (Vector Int)
+singleLoop' as =
+  let bs = A.reverse  $ barrier $ as
+      cs = A.map (+1) $ barrier $ as
+      ds = A.map (*2) $ barrier $ cs
+  in  A.zipWith3 (\b c d -> b + c + d) bs cs ds
+
+-- something that showcases the use of awhileFuse, but sadly we also need something like fold to be implemented to make this work
+mapWhilePositive :: Acc (Vector Int) -> Acc (Vector Int)
+mapWhilePositive = awhileFuse (fold1 (A.&&) . A.map (A.> 0)) (A.map (\x -> x-1))
+
+diagonal :: Acc (Vector Int) -> Acc (Vector Int, Vector Int)
+diagonal xs = let ys = A.map (+2) xs in T2 ys (A.map (+3) ys)
+
+diagonal' :: Acc (Vector Int) -> Acc (Vector Int, Vector Int)
+diagonal' xs = let ys = A.map (+2) xs in T2 ys (A.map (+3) $ barrier ys)
+
+
+
+
+
+barrier :: Elt a => Acc (Vector a) -> Acc (Vector a)
+barrier xs = generate (shape xs) (xs A.!)
+
+
+--------------------------------------------------------
 
 -- the map correctly doesn't get fused into the zip and reverse kernel
 zippies :: Acc (Vector Int) -> Acc (Vector Int)
@@ -58,8 +134,8 @@ reverses xs = let
   in T2 c (A.reverse d)
 
 
-foo :: Acc (Vector Int) -> Acc (Vector (Int, Int))
-foo =  A.map (\x -> T2 (x-1) (x+1))
+foo :: Acc (Vector Int) -> Acc (Vector Int)
+foo = A.map (\(T2 a b) -> a + b) . A.map (\x -> T2 (x-1) (x+1))
 
 -- A version of awhile that generates more code, as we duplicate the condition, but this allows it to fuse the condition into the body
 awhileFuse :: Arrays a 
