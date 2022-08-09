@@ -19,6 +19,7 @@ import Data.Array.Accelerate.Interpreter
 import Data.Array.Accelerate.LLVM.Native
 import Data.Array.Accelerate.LLVM.Native.Operation
 import Criterion.Main
+import Control.Monad
 
 main :: IO ()
 -- main = nofib runN
@@ -28,16 +29,16 @@ main = do
   -- Currently, SLV is broken and it removes permutes!
   -- putStrLn $ test @UniformScheduleFun @NativeKernel $ \xs ys -> A.permute @DIM2 @DIM1 @Int (+) xs (const $ Just_ $ I1 0) ys
   -- putStrLn $ test @UniformScheduleFun @NativeKernel $ diagonal'
-  -- print $ run @Native $ complex (use $ fromList (Z:.1024*1024) [1 :: Int ..])
+  putStrLn $ Prelude.take 50 $ show $ runN @Native $ complex (use $ fromList (Z:.1024*1024) [1 :: Int ..])
 
   -- benchmarking:
-  let xs = fromList (Z:.1024) [1 :: Int ..]
-  defaultMain [
-    bgroup "complex" 
-      [ env (pure (runN @Native complex , xs)) $ \ ~(program, input) -> bench "new" $ nf program input
-      -- , env (pure (runN @Native complex', xs)) $ \ ~(program, input) -> bench "old" $ nf program input
-      ]
-    ]
+  -- let xs = fromList (Z:.1024) [1 :: Int ..]
+  -- defaultMain [
+  --   bgroup "complex" 
+  --     [ env (pure (runN @Native complex , xs)) $ \ ~(program, input) -> bench "new" $ nf program input
+  --     -- , env (pure (runN @Native complex', xs)) $ \ ~(program, input) -> bench "old" $ nf program input
+  --     ]
+  --   ]
 
 
 ----------------------------BENCHMARKS------------------------------
