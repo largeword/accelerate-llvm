@@ -111,9 +111,9 @@ runWorker !workers !threadIdx = do
   tryRunWork workers threadIdx 0
 
 tryRunWork :: Workers -> ThreadIdx -> Int16 -> IO ()
--- tryRunWork !workers !threadIdx 16 = do
---   sleepIf (workerSleep workers) ({- Last check before sleeping -} noWork workers)
---   runWorker workers threadIdx
+tryRunWork !workers !threadIdx 16 = do
+  sleepIf (workerSleep workers) ({- Last check before sleeping -} noWork workers)
+  runWorker workers threadIdx
 tryRunWork !workers !threadIdx !retries = do
   mjob <- tryDequeue workers
   case mjob of
