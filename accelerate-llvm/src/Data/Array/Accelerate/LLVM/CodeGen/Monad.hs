@@ -30,7 +30,7 @@ module Data.Array.Accelerate.LLVM.CodeGen.Monad (
 
   -- basic blocks
   Block,
-  newBlock, setBlock, beginBlock, createBlocks,
+  newBlock, setBlock, getBlock, beginBlock, createBlocks,
 
   -- instructions
   instr, instr', do_, return_, retval_, br, cbr, switch, phi, phi', phi1,
@@ -212,6 +212,10 @@ setBlock :: Block -> CodeGen arch ()
 setBlock next =
   modify $ \s -> s { blockChain = blockChain s Seq.|> next }
 
+getBlock :: CodeGen arch Block
+getBlock = state $ \s -> case Seq.viewr (blockChain s) of
+  Seq.EmptyR -> internalError "empty block chain"
+  _ Seq.:> b -> ( b, s )
 
 -- | Generate a new block and branch unconditionally to it.
 --
@@ -329,9 +333,7 @@ switch tag def eqs = terminate $ Switch (op scalarType tag) (blockLabel def) [(S
 phi :: forall arch a. HasCallStack => TypeR a -> [(Operands a, Block)] -> CodeGen arch (Operands a)
 phi tp incoming = do
   crit  <- fresh tp
-  block <- state $ \s -> case Seq.viewr (blockChain s) of
-                           Seq.EmptyR -> internalError "empty block chain"
-                           _ Seq.:> b -> ( b, s )
+  block <- getBlock
   phi' tp block crit incoming
 
 phi' :: HasCallStack => TypeR a -> Block -> Operands a -> [(Operands a, Block)] -> CodeGen arch (Operands a)

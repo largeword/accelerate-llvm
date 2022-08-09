@@ -173,7 +173,6 @@ workstealLoop
     -> CodeGen Native ()
 workstealLoop counter activeThreads size doWork = do
   start    <- newBlock "worksteal.start"
-  claim    <- newBlock "worksteal.loop.claim"
   work     <- newBlock "worksteal.loop.work"
   exit     <- newBlock "worksteal.exit"
   exitLast <- newBlock "worksteal.exit.last"
@@ -188,16 +187,27 @@ workstealLoop counter activeThreads size doWork = do
   -- Might be work for us!
   -- First mark that this thread is doing work.
   atomicAdd Acquire activeThreads (integral TypeInt32 1)
-  br claim
-
-  setBlock claim
-  index <- atomicAdd Unordered counter (integral TypeInt32 1)
-  condition <- lt singleType (OP_Int32 index) (OP_Int32 size)
-  cbr condition work exit
+  startIndex <- atomicAdd Unordered counter (integral TypeInt32 1)
+  startCondition <- lt singleType (OP_Int32 startIndex) (OP_Int32 size)
+  cbr startCondition work exit
 
   setBlock work
+  indexName <- freshLocalName
+  let index = LocalReference type' indexName
+
+  -- Already claim the next work, to hide the latency of the atomic instruction
+  nextIndex <- atomicAdd Unordered counter (integral TypeInt32 1)
+
   doWork index
-  br claim
+  condition <- lt singleType (OP_Int32 nextIndex) (OP_Int32 size)
+
+  -- Append the phi node to the start of the 'work' block.
+  -- We can only do this now, as we need to have 'nextIndex', and know the
+  -- exit block of 'doWork'.
+  currentBlock <- getBlock
+  phi1 work indexName [(startIndex, start), (nextIndex, currentBlock)]
+
+  cbr condition work exit
 
   setBlock exit
   -- Decrement activeThreads
@@ -206,7 +216,18 @@ workstealLoop counter activeThreads size doWork = do
   -- Note that there may be multiple threads returning true here.
   -- It is guaranteed that at least one thread returns true.
   allDone <- eq singleType (OP_Int32 remaining) (liftInt32 1)
-  retval_ $ op BoolPrimType allDone
+  cbr allDone exitLast finished
+
+  setBlock exitLast
+  -- Use compare-and-set to change the active-threads counter to 1:
+  --  * Out of all threads that currently see an active-thread count of 0, only
+  --    1 will succeed the CAS.
+  --  * Given that the counter is artifically increased here, no other thread
+  --    will see the counter ever drop to 0.
+  -- Hence we get a unique thread to continue the computation after this kernel.
+  casResult <- instr' $ CmpXchg TypeInt32 NonVolatile activeThreads (integral TypeInt32 0) (integral TypeInt32 1) (CrossThread, Monotonic) Monotonic
+  last <- instr' $ ExtractValue primType (TupleIdxRight TupleIdxSelf) casResult
+  retval_ last
 
   setBlock finished
   -- Work was already finished
@@ -229,7 +250,7 @@ workstealChunked shr counter activeThreads sh doWork = do
 
 chunkSize :: ShapeR sh -> sh
 chunkSize ShapeRz = ()
-chunkSize (ShapeRsnoc ShapeRz) = ((), 2048)
+chunkSize (ShapeRsnoc ShapeRz) = ((), 1024 * 16)
 chunkSize (ShapeRsnoc (ShapeRsnoc ShapeRz)) = (((), 64), 64)
 chunkSize (ShapeRsnoc (ShapeRsnoc (ShapeRsnoc ShapeRz))) = ((((), 16), 16), 32)
 chunkSize (ShapeRsnoc (ShapeRsnoc (ShapeRsnoc (ShapeRsnoc sh)))) = ((((go sh, 8), 8), 16), 16)
