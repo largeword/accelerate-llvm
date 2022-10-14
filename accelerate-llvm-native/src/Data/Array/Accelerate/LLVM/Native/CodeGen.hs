@@ -26,58 +26,38 @@ module Data.Array.Accelerate.LLVM.Native.CodeGen (
 
 -- accelerate
 import Data.Array.Accelerate.Representation.Array
-import Data.Array.Accelerate.Representation.Shape (empty, shapeType, ShapeR(..))
+import Data.Array.Accelerate.Representation.Shape (shapeType, ShapeR(..))
 import Data.Array.Accelerate.Representation.Type
 import Data.Array.Accelerate.AST.Exp
 import Data.Array.Accelerate.AST.Partitioned
 import Data.Array.Accelerate.AST.Var
-import Data.Array.Accelerate.AST.LeftHandSide
 import Data.Array.Accelerate.Eval
 import Data.Array.Accelerate.Type
 import Data.Array.Accelerate.Trafo.LiveVars
-import Data.Array.Accelerate.Error
 import qualified Data.Array.Accelerate.AST.Environment as Env
 import Data.Array.Accelerate.LLVM.State
 import Data.Array.Accelerate.LLVM.Compile.Cache
-import Data.Array.Accelerate.LLVM.CodeGen.Base
 import Data.Array.Accelerate.LLVM.CodeGen.Environment hiding ( Empty )
 import Data.Array.Accelerate.LLVM.Native.Operation
 -- import Data.Array.Accelerate.LLVM.Native.CodeGen.Skeleton
 import Data.Array.Accelerate.LLVM.Native.CodeGen.Base
-import Data.Array.Accelerate.LLVM.Native.CodeGen.Fold
-import Data.Array.Accelerate.LLVM.Native.CodeGen.FoldSeg
-import Data.Array.Accelerate.LLVM.Native.CodeGen.Generate
-import Data.Array.Accelerate.LLVM.Native.CodeGen.Map
-import Data.Array.Accelerate.LLVM.Native.CodeGen.Permute
-import Data.Array.Accelerate.LLVM.Native.CodeGen.Scan
-import Data.Array.Accelerate.LLVM.Native.CodeGen.Stencil
-import Data.Array.Accelerate.LLVM.Native.CodeGen.Transform
 import Data.Array.Accelerate.LLVM.Native.Target
-import Control.DeepSeq
 import Data.Typeable
 
-import LLVM.AST.Type.Representation
 import LLVM.AST.Type.Module
-import LLVM.AST.Type.Function
 import Data.Array.Accelerate.LLVM.CodeGen.Monad
 import qualified LLVM.AST.Type.Function as LLVM
-import LLVM.AST.Type.AddrSpace (defaultAddrSpace)
 import Data.Array.Accelerate.LLVM.CodeGen.Array
 import Data.Array.Accelerate.LLVM.CodeGen.IR (Operands (..), IROP (..))
 import Unsafe.Coerce (unsafeCoerce)
-import Data.Array.Accelerate.LLVM.CodeGen.Sugar (app1, IRBuffer (IRBuffer), IROpenFun2 (app2))
+import Data.Array.Accelerate.LLVM.CodeGen.Sugar (app1, IROpenFun2 (app2))
 import Data.Array.Accelerate.LLVM.CodeGen.Exp (llvmOfFun1, intOfIndex, llvmOfFun2)
 import Data.Array.Accelerate.Trafo.Desugar (ArrayDescriptor(..))
-import Data.Array.Accelerate.LLVM.CodeGen.Arithmetic (ifThenElse, isJust, when, fromJust, eq)
-import LLVM.AST.Type.Name
+import Data.Array.Accelerate.LLVM.CodeGen.Arithmetic (fromJust)
 import Data.Array.Accelerate.LLVM.Native.CodeGen.Loop
-import Data.Array.Accelerate.LLVM.CodeGen.Constant (constant)
 import Data.Array.Accelerate.Analysis.Match (matchShapeR)
 import Data.Array.Accelerate.Trafo.Exp.Substitution (compose)
-import Data.Array.Accelerate.Array.Buffer (readBuffers)
-import LLVM.Internal.FFI.LLVMCTypes (libFunc__printf)
 import Data.Array.Accelerate.AST.Operation (groundToExpVar)
-import qualified Debug.Trace
 
 -- TODO: this is still singlethreaded
 -- TODO: add 'dimsPerIter' to backendargs, add a counter for depth to the Index type, replace imapNestFromTo with a stack of iterFromTo's 
@@ -103,18 +83,18 @@ codegen uid env c args = loopheader $ evalCluster c args gamma
 -- This function also fails for the specific case of a vertically fused generate into permute: That cluster has no inputs nor outputs,
 -- but the vertically fused away array does need to be fully computed. This gets solved automatically when we add backpermutes and pick any in-order argument
 loopsize :: forall env args r. Cluster NativeOp args -> Gamma env -> Args env args -> (forall sh. (ShapeR sh, Operands sh) -> r) -> r
-loopsize (Cluster _ (Cluster' io _)) gamma args k = go io args
-  where
-    go :: ClusterIO a i o -> Args env a -> r
-    go Empty                  ArgsNil                              = k (ShapeRz, OP_Unit)
-    go (Input _)            (ArgArray _ (ArrayR shr _) sh _ :>: _) = k (shr, aprjParameters (unsafeToExpVars sh) gamma)
-    go (Output{}) (ArgArray _ (ArrayR shr _) sh _ :>: _)           = k (shr, aprjParameters (unsafeToExpVars sh) gamma)
-    go (Trivial _)          (ArgArray _ (ArrayR shr _) sh _ :>: _) = k (shr, aprjParameters (unsafeToExpVars sh) gamma)
-    go (Vertical _ (ArrayR shr _) _) (ArgVar sh :>: _)             = k (shr, aprjParameters                  sh  gamma)
-    go (MutPut io')           (_ :>: args') = go io' args'
-    go (ExpPut io')           (_ :>: args') = go io' args'
-    go (VarPut io')           (_ :>: args') = go io' args'
-    go (FunPut io')           (_ :>: args') = go io' args'
+loopsize (Cluster _ (Cluster' io _)) gamma args k = error "TODO" -- need to do some fiddling, consider e.g. backpermute.fold where we need to do the output of the backpermute, with the inner dimension of the fold on top. Use the 'onOp' for this!
+  -- where
+  --   go :: ClusterIO a i o -> Args env a -> r
+  --   go Empty                  ArgsNil                              = k (ShapeRz, OP_Unit)
+  --   go (Input _)            (ArgArray _ (ArrayR shr _) sh _ :>: _) = k (shr, aprjParameters (unsafeToExpVars sh) gamma)
+  --   go (Output{}) (ArgArray _ (ArrayR shr _) sh _ :>: _)           = k (shr, aprjParameters (unsafeToExpVars sh) gamma)
+  --   go (Trivial _)          (ArgArray _ (ArrayR shr _) sh _ :>: _) = k (shr, aprjParameters (unsafeToExpVars sh) gamma)
+  --   go (Vertical _ (ArrayR shr _) _) (ArgVar sh :>: _)             = k (shr, aprjParameters                  sh  gamma)
+  --   go (MutPut io')           (_ :>: args') = go io' args'
+  --   go (ExpPut io')           (_ :>: args') = go io' args'
+  --   go (VarPut io')           (_ :>: args') = go io' args'
+  --   go (FunPut io')           (_ :>: args') = go io' args'
 
 
 instance EvalOp NativeOp where
@@ -176,6 +156,8 @@ instance EvalOp NativeOp where
             writeArray TypeInt gamma (ArgArray Mut (ArrayR shrt tty) sht buft) j r
         return Env.Empty
   evalOp i NScanl1 gamma args = error "todo" -- need to switch the 'imapNestFromTo' to something else
+  evalOp i NFold1 gamma args = error "todo"
+  evalOp i NFold2 gamma args = error "todo"
 
 multidim :: ShapeR sh -> [Operands Int] -> Operands sh
 multidim ShapeRz [] = OP_Unit

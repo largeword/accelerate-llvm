@@ -20,34 +20,40 @@ import Data.Array.Accelerate.LLVM.Native
 import Data.Array.Accelerate.LLVM.Native.Operation
 import Criterion.Main
 import Control.Monad
+import Prelude ()
+import qualified Prelude as Prelude
 
-main :: IO ()
+main :: Prelude.IO ()
 -- main = nofib runN
-main = 
+main = do
   -- Currently, SLV is broken and it removes permutes!
   -- putStrLn $ test @UniformScheduleFun @NativeKernel $ \xs ys -> A.permute @DIM2 @DIM1 @Int (+) xs (const $ Just_ $ I1 0) ys
-  -- putStrLn $ test @UniformScheduleFun @NativeKernel $ diagonal'
-  -- print $ flip linearIndexArray 0 . Prelude.fst $ runN @Native $ complex (use $ fromList (Z:.1024) [1 :: Int ..])
+  Prelude.putStrLn $ test @UniformScheduleFun @NativeKernel $ -- backpermute @_ @_ @Float (I2 2 10) (\(I2 x y) -> I2 y x) . backpermute (I2 10 10) (\(I2 x y) -> I2 y x)
+    \a b -> let I2 k m = shape a 
+                I2 _ n = shape b 
+            in sum $ backpermute (I3 k m n) (\(I3 p q r) -> I3 p r q) $ zipWith ((*) @(Exp Float)) (replicate (I3 All_ All_ n) a) (replicate (I3 k All_ All_) b)
+  -- print $ flip linearIndexArray 0 . Prelude.fst $ runN @Native $ diagonal (use $ fromList (Z:.1024) [1 :: Int ..])
+  -- print $ flip linearIndexArray 0 . Prelude.fst $ runN @Native $ diagonal' (use $ fromList (Z:.1024) [1 :: Int ..])
 
   -- benchmarking:
-  defaultMain 
-    [ benchsize 1
-    , benchsize 32
-    , benchsize 64
-    -- , benchsize (1024*1024)      
-    ]
+  -- defaultMain 
+  --   [ --benchsize 1
+  --   -- , benchsize 32
+  --   -- , benchsize 64
+  --   --  benchsize (1024*1024*32)      
+  --   ]
   where 
-    xs n = fromList (Z:.n) [1 :: Int ..]
-    benchsize n = bgroup (show n)
+    xs n = fromList (Z:.n) $ Prelude.map (`Prelude.mod` (n `div` 2)) [1 :: Int ..]
+    benchsize n = bgroup (Prelude.show n)
       -- we force the result by indexing into a result array and forcing that number. 
       -- some benchmarks return two arrays, so we simply index in the first one
-      [ env (return (xs n, flip linearIndexArray 0 . Prelude.fst . runN @Native complex    )) $ (\ ~(xs, p) -> bench "complex    " $ nf p xs) 
-      , env (return (xs n, flip linearIndexArray 0 . Prelude.fst . runN @Native complex'   )) $ (\ ~(xs, p) -> bench "complex'   " $ nf p xs) 
-      , env (return (xs n, flip linearIndexArray 0               . runN @Native complexAdd )) $ (\ ~(xs, p) -> bench "complexAdd " $ nf p xs) 
-      , env (return (xs n, flip linearIndexArray 0               . runN @Native complexAdd')) $ (\ ~(xs, p) -> bench "complexAdd'" $ nf p xs)         
-      , env (return (xs n, flip linearIndexArray 0               . runN @Native singleLoop )) $ (\ ~(xs, p) -> bench "singleLoop " $ nf p xs)         
-      , env (return (xs n, flip linearIndexArray 0               . runN @Native singleLoop')) $ (\ ~(xs, p) -> bench "singleLoop'" $ nf p xs) 
-      , env (return (xs n, flip linearIndexArray 0 . Prelude.fst . runN @Native diagonal   )) $ (\ ~(xs, p) -> bench "diagonal   " $ nf p xs) 
+      -- [ env (return (xs n, flip linearIndexArray 0 . Prelude.fst . runN @Native complex    )) $ (\ ~(xs, p) -> bench "complex    " $ nf p xs) 
+      -- , env (return (xs n, flip linearIndexArray 0 . Prelude.fst . runN @Native complex'   )) $ (\ ~(xs, p) -> bench "complex'   " $ nf p xs) 
+      -- , env (return (xs n, flip linearIndexArray 0               . runN @Native complexAdd )) $ (\ ~(xs, p) -> bench "complexAdd " $ nf p xs) 
+      -- , env (return (xs n, flip linearIndexArray 0               . runN @Native complexAdd')) $ (\ ~(xs, p) -> bench "complexAdd'" $ nf p xs)         
+      -- , env (return (xs n, flip linearIndexArray 0               . runN @Native singleLoop )) $ (\ ~(xs, p) -> bench "singleLoop " $ nf p xs)         
+      -- , env (return (xs n, flip linearIndexArray 0               . runN @Native singleLoop')) $ (\ ~(xs, p) -> bench "singleLoop'" $ nf p xs) 
+      [ env (return (xs n, flip linearIndexArray 0 . Prelude.fst . runN @Native diagonal   )) $ (\ ~(xs, p) -> bench "diagonal   " $ nf p xs) 
       , env (return (xs n, flip linearIndexArray 0 . Prelude.fst . runN @Native diagonal'  )) $ (\ ~(xs, p) -> bench "diagonal'  " $ nf p xs) 
       ]
 
@@ -159,3 +165,13 @@ awhileFuse c f x = asnd $ A.awhile c' f' x'
     x' = T2 (c x) x
     c' (T2 cond _) = cond
     f' (T2 _ value) = let value' = f value in T2 (c value') value'
+
+------------------
+
+
+-- new example to replace 'complex': needs to be easy, but have at least two local optima
+
+-- example xs =
+--   let as = map (+1) xs
+--       bs = map (*2) xs
+--   in permute (+) (\i -> i/2) as bs
