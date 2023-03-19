@@ -18,6 +18,7 @@ module Data.Array.Accelerate.LLVM.Native.Embed (
 
 ) where
 
+{-
 import Data.ByteString.Short.Char8                                  as S8
 import Data.ByteString.Short.Extra                                  as BS
 
@@ -42,7 +43,6 @@ import qualified Language.Haskell.TH.Syntax                         as TH
 import Data.Maybe
 import qualified Data.Set                                           as Set
 
-{-
 instance Embed Native where
   embedForTarget = embed
 

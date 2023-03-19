@@ -62,11 +62,9 @@ module Data.Array.Accelerate.LLVM.Native (
 import Data.Array.Accelerate.Backend
 import Data.Array.Accelerate.AST.Schedule.Uniform
 import Data.Array.Accelerate.Pretty.Schedule.Uniform ()
-import Data.Array.Accelerate.Trafo.Schedule.Uniform
 import Data.Array.Accelerate.LLVM.Native.Target
-import Data.Array.Accelerate.LLVM.Native.Operation
 import Data.Array.Accelerate.LLVM.Native.Kernel
-import Data.Array.Accelerate.LLVM.Native.Execute
+import Data.Array.Accelerate.LLVM.Native.Execute ()
 
 instance Backend Native where
   type Schedule Native = UniformScheduleFun
