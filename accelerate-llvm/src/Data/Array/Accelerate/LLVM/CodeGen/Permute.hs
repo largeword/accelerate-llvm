@@ -227,6 +227,13 @@ atomicCAS_rmw' t i update addr = withDict (integralElt i) $ do
   old   <- instr' $ BitCast (SingleScalarType t) (op i old')
   val   <- update $ ir t old
   val'  <- instr' $ BitCast si (op t val)
+  -- TODO: We could mark this CmpXchg as weak, as it is already in a loop. That
+  -- may increase performance on some systems.
+  --
+  -- From the LLVM language specification:
+  -- If the cmpxchg operation is marked as weak then a spurious failure is
+  -- permitted: the operation may not write <new> even if the comparison matched
+  -- https://llvm.org/docs/LangRef.html#cmpxchg-instruction
   r     <- instr' $ CmpXchg i NonVolatile addr' (op i old') val' (CrossThread, AcquireRelease) Monotonic
   done  <- instr' $ ExtractValue primType            (TupleIdxRight TupleIdxSelf) r
   next' <- instr' $ ExtractValue (ScalarPrimType si) (TupleIdxLeft  TupleIdxSelf) r

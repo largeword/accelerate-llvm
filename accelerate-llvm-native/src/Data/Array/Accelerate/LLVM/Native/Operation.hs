@@ -58,7 +58,7 @@ import qualified Debug.Trace
 import qualified Data.Map as M
 
 
-data NativeOp op where
+data NativeOp t where
   NMap         :: NativeOp (Fun' (s -> t)    -> In sh s -> Out sh  t -> ())
   NBackpermute :: NativeOp (Fun' (sh' -> sh) -> In sh t -> Out sh' t -> ())
   NGenerate    :: NativeOp (Fun' (sh -> t)              -> Out sh  t -> ())
