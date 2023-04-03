@@ -42,19 +42,19 @@ import Data.Array.Accelerate.Trafo.Var (DeclareVars(..), declareVars)
 import Data.Array.Accelerate.Representation.Ground (buffersR, typeRtoGroundsR)
 import Data.Array.Accelerate.AST.LeftHandSide
 import Data.Array.Accelerate.Trafo.Operation.Substitution (aletUnique, alet, weaken, LHS (..), mkLHS)
-import Data.Array.Accelerate.Representation.Shape (ShapeR (..), shapeType, rank)
+import Data.Array.Accelerate.Representation.Shape (ShapeR (..), shapeType)
 import Data.Array.Accelerate.Representation.Type (TypeR, TupR (..))
 import Data.Array.Accelerate.Type (scalarType, Word8, scalarTypeWord8, scalarTypeInt)
 import Data.Array.Accelerate.Analysis.Match
 import Data.Maybe (isJust)
 import Data.Array.Accelerate.Interpreter (InOut (..))
 import qualified Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph as Graph
-import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solver
+import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solver hiding ( c )
+import qualified Data.Array.Accelerate.Trafo.Partitioning.ILP.Solver as ILP
 import Lens.Micro
 import qualified Data.Map as M
 import Data.Array.Accelerate.Trafo.Exp.Substitution
 import Data.Array.Accelerate.Trafo.Desugar (desugarAlloc)
-import Data.Array.Accelerate.Trafo.Substitution (Sink'(..))
 
 import qualified Debug.Trace
 import GHC.Stack
@@ -101,7 +101,7 @@ instance DesugarAcc NativeOp where
   mkMap         a b c   = Exec NMap         (a :>: b :>: c :>:       ArgsNil)
   mkBackpermute a b c   = Exec NBackpermute (a :>: b :>: c :>:       ArgsNil)
   mkGenerate    a b     = Exec NGenerate    (a :>: b :>:             ArgsNil)
-  mkScan LeftToRight f Nothing i o
+  mkScan LeftToRight _f Nothing _i _o
     -- If multidimensional, simply NScanl1.
     -- Otherwise, NScanl1 followed by NScanl1 on the reductions, followed by a replicate on that result and then zipWith the first result.
     = error "todo"
@@ -113,7 +113,7 @@ instance DesugarAcc NativeOp where
     = Debug.Trace.trace "hello??" $ aletUnique lhs 
         (Alloc shr scalarTypeWord8 $ groundToExpVar (shapeType shr) sh)
         $ alet LeftHandSideUnit
-          (Exec NGenerate ( -- The old pipeline used a 'memset 0' instead, which sounds faster...
+          (Exec NGenerate ( -- TODO: The old pipeline used a 'memset 0' instead, which sounds faster...
                 ArgFun (Lam (LeftHandSideWildcard (shapeType shr)) $ Body $ Const scalarTypeWord8 0)
             :>: ArgArray Out (ArrayR shr (TupRsingle scalarTypeWord8)) (weakenVars w sh) (lock weakenId) 
             :>: ArgsNil))
@@ -138,7 +138,7 @@ instance DesugarAcc NativeOp where
             LHS lhs vars ->
               mkMap
                 (ArgFun $ 
-                  Lam lhs $ Body $ (\f -> apply2 tp f (weakenThroughReindex wTemp reindexExp $ 
+                  Lam lhs $ Body $ (\f' -> apply2 tp f' (weakenThroughReindex wTemp reindexExp $ 
                     weakenE weakenEmpty seed) (expVars vars)) $ weakenThroughReindex wTemp reindexExp f)
                 (ArgArray In arr' (weakenVars wTemp sh') (kTemp weakenId))
                 (weaken wTemp c)
@@ -178,36 +178,31 @@ instance EncodeOperation NativeOp where
   encodeOperation NFold1       = intHost $(hashQ ("Fold-1" :: String))
   encodeOperation NFold2       = intHost $(hashQ ("Fold-2" :: String))
 
--- -3 can't fuse with anything, -2 for 'left to right', -1 for 'right to left', n for 'unpredictable, see computation n' (currently only backpermute)
-data NativeILPVar = Order InOut  Label 
+data NativeILPVar = Dims InOut Label
                   -- 0 means maximal parallelism; each thread only gets 1 element, e.g. output of the first stage of 1-dimensional fold
                   -- 1 is segmented along the innermost dimension into nthreads equal parts, e.g. input of the first stage of 1-dimensional fold
                   -- 2 is one row for each thread
                   -- 3 is segmented along the second dimension, e.g. input of a fused folddim followed by first stage of 1-dimensional fold
                   -- 4 is 2 dimensions per thread, etc
                   -- note that this is about _logical_ threads; if there are less physical ones present then they will perform work stealing, so this is really the (minimum) size of each bucket in the work stealing queue
-                  | Dims InOut Label
   deriving (Eq, Ord, Show)
-pattern InDir, OutDir, InDims, OutDims :: Label -> Graph.Var NativeOp
-pattern InDir   l = BackendSpecific (Order  InArr l)
-pattern OutDir  l = BackendSpecific (Order OutArr l)
+pattern InDims, OutDims :: Label -> Graph.Var NativeOp
 pattern InDims  l = BackendSpecific (Dims   InArr l)
 pattern OutDims l = BackendSpecific (Dims  OutArr l)
 
 
 -- TODO: factor out more common parts of mkGraph
--- TODO: do the TODO's in here, and also do them in the Interpreter
--- TODO: enforce that all buffers that together make up an array (say, as input of a Map) all have the same order
+-- TODO: do the TODO's in here, and also do them in the Interpreter\
 instance MakesILP NativeOp where
   type BackendVar NativeOp = NativeILPVar
-  type BackendArg NativeOp = Int -- the Order, to ensure that multiple uses of the same array in different orders get separate array reads
+  type BackendArg NativeOp = Int
   data BackendClusterArg NativeOp a = None
 
-  mkGraph NBackpermute (_ :>: L (ArgArray In (ArrayR shrI _) _ _) (_, lIns) :>: L (ArgArray Out (ArrayR shrO _) _ _)_ :>: ArgsNil) l@(Label i _) =
+  mkGraph NBackpermute (_ :>: L (ArgArray In (ArrayR _shrI _) _ _) (_, lIns) :>: L (ArgArray Out (ArrayR _shrO _) _ _)_ :>: ArgsNil) l@(Label i _) =
     Graph.Info
       mempty
       (    inputConstraints l lIns
-        <> c (InDir l) .==. int i 
+        <> ILP.c (InDir l) .==. int i 
           -- .+. timesN (int 3 .+. c (OutDir l)) 
           -- When we switch to gather, like in the paper, we need to add this term.
           -- 4 + dir is always positive, and this is exactly why we (elsewhere) define `n` as `5+(size nodes)`
@@ -224,50 +219,50 @@ instance MakesILP NativeOp where
     Graph.Info
       mempty
       (    inputConstraints l lIns
-        <> c (InDir  l) .==. c (OutDir  l)
-        <> c (InDims l) .==. c (OutDims l))
+        <> ILP.c (InDir  l) .==. ILP.c (OutDir  l)
+        <> ILP.c (InDims l) .==. ILP.c (OutDims l))
       (defaultBounds l)
   mkGraph NPermute (_ :>: L _ (_, lTargets) :>: L _ (_, lLocks) :>: _ :>: L _ (_, lIns) :>: ArgsNil) l =
     Graph.Info
       ( mempty & infusibleEdges .~ Set.map (-?> l) (lTargets <> lLocks)) -- add infusible edges from the producers of target and lock arrays to the permute
       (    inputConstraints l lIns
-        <> c (OutDir l) .==. int (-3)) -- Permute cannot fuse with its consumer
+        <> ILP.c (OutDir l) .==. int (-3)) -- Permute cannot fuse with its consumer
       ( lower (-2) (InDir l)) -- default lowerbound for the input, but not for the output (as we set it to -3)
-  mkGraph NScanl1 (_ :>: L _ (_, lIns) :>: _ :>: _ :>: ArgsNil) l =
+  mkGraph NScanl1 (_ :>: L _ (_, _lIns) :>: _ :>: _ :>: ArgsNil) _l =
     error "todo"
   mkGraph NFold1 (_ :>: L _ (_, lIns) :>: _ :>: ArgsNil) l =
     Graph.Info
       mempty
       (    inputConstraints l lIns
-        <> c (InDir   l) .==. c (OutDir l)
-        <> c (InDims  l) .==. int 1
-        <> c (OutDims l) .==. int 0)
+        <> ILP.c (InDir   l) .==. ILP.c (OutDir l)
+        <> ILP.c (InDims  l) .==. int 1
+        <> ILP.c (OutDims l) .==. int 0)
       (defaultBounds l)
   mkGraph NFold2 (_ :>: L _ (_, lIns) :>: _ :>: ArgsNil) l =
     Graph.Info
       mempty
       (    inputConstraints l lIns
-        <> c (InDir  l) .==. c (OutDir l)
-        <> c (InDims l) .==. int 2 .+. c (OutDims l)) -- Difference of 2, because a full dimension is reduced
+        <> ILP.c (InDir  l) .==. ILP.c (OutDir l)
+        <> ILP.c (InDims l) .==. int 2 .+. ILP.c (OutDims l)) -- Difference of 2, because a full dimension is reduced
       (defaultBounds l)
 
-  labelLabelledArg :: M.Map (BackendVar NativeOp) Int -> Label -> LabelledArg env a -> LabelledArgOp NativeOp env a
-  labelLabelledArg vars l (L x@(ArgArray In  _ _ _) y) = LOp x y $ vars M.! Order InArr  l
-  labelLabelledArg vars l (L x@(ArgArray Out _ _ _) y) = LOp x y $ vars M.! Order OutArr l
+  labelLabelledArg :: M.Map (Graph.Var NativeOp) Int -> Label -> LabelledArg env a -> LabelledArgOp NativeOp env a
+  labelLabelledArg vars l (L x@(ArgArray In  _ _ _) y) = LOp x y $ vars M.! InDir  l
+  labelLabelledArg vars l (L x@(ArgArray Out _ _ _) y) = LOp x y $ vars M.! OutDir l
   labelLabelledArg _ _ (L x y) = LOp x y 0
   getClusterArg :: LabelledArgOp NativeOp env a -> BackendClusterArg NativeOp a
   getClusterArg _ = None
   -- For each label: If the output is manifest, then its direction is negative (i.e. not in a backpermuted order)
-  finalize = mempty-- foldMap $ \l -> timesN (manifest l) .>. c (OutDir l)
+  finalize = foldMap $ \l -> timesN (manifest l) .>. ILP.c (OutDir l)
 
   encodeBackendClusterArg None = intHost $(hashQ ("None" :: String))
 
 inputConstraints :: HasCallStack => Label -> Labels -> Constraint NativeOp
 inputConstraints l = foldMap $ \lIn -> 
-                timesN (fused lIn l) .>=. c (InDir  l) .-. c (OutDir  lIn)
-    <> (-1) .*. timesN (fused lIn l) .<=. c (InDir  l) .-. c (OutDir  lIn)
-    <>          timesN (fused lIn l) .>=. c (InDims l) .-. c (OutDims lIn)
-    <> (-1) .*. timesN (fused lIn l) .<=. c (InDims l) .-. c (OutDims lIn)
+                timesN (fused lIn l) .>=. ILP.c (InDir  l) .-. ILP.c (OutDir  lIn)
+    <> (-1) .*. timesN (fused lIn l) .<=. ILP.c (InDir  l) .-. ILP.c (OutDir  lIn)
+    <>          timesN (fused lIn l) .>=. ILP.c (InDims l) .-. ILP.c (OutDims lIn)
+    <> (-1) .*. timesN (fused lIn l) .<=. ILP.c (InDims l) .-. ILP.c (OutDims lIn)
 
 defaultBounds :: Label -> Bounds NativeOp
 defaultBounds l = lower (-2) (InDir l) <> lower (-2) (OutDir l) <> lower 0 (InDims l) <> lower 0 (OutDims l)

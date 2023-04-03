@@ -59,9 +59,9 @@ import Data.Array.Accelerate.Analysis.Match (matchShapeR)
 import Data.Array.Accelerate.Trafo.Exp.Substitution (compose)
 import Data.Array.Accelerate.AST.Operation (groundToExpVar)
 
--- TODO: this is still singlethreaded
+-- TODO: is this still singlethreaded?
 -- TODO: add 'dimsPerIter' to backendargs, add a counter for depth to the Index type, replace imapNestFromTo with a stack of iterFromTo's 
---       that each contain two calls to evalCluster (before and after recursive loop) as well as a recursive loop (with the obvious base case).
+--       that each contain two calls to evalCluster (before and after recursive loop) as well as a recursive loop.
 codegen :: UID
             -> Env AccessGroundR env
             -> Cluster NativeOp args

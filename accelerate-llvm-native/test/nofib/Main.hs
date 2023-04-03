@@ -10,6 +10,7 @@
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 module Main where
 
 import Data.Array.Accelerate as A
@@ -29,9 +30,10 @@ main = do
   -- Currently, SLV is broken and it removes permutes!
   -- putStrLn $ test @UniformScheduleFun @NativeKernel $ \xs ys -> A.permute @DIM2 @DIM1 @Int (+) xs (const $ Just_ $ I1 0) ys
   Prelude.putStrLn $ test @UniformScheduleFun @NativeKernel $ -- backpermute @_ @_ @Float (I2 2 10) (\(I2 x y) -> I2 y x) . backpermute (I2 10 10) (\(I2 x y) -> I2 y x)
-    \a b -> let I2 k m = shape a 
-                I2 _ n = shape b 
-            in sum $ backpermute (I3 k m n) (\(I3 p q r) -> I3 p r q) $ zipWith ((*) @(Exp Float)) (replicate (I3 All_ All_ n) a) (replicate (I3 k All_ All_) b)
+    -- \a b -> let I2 k m = shape a 
+    --             I2 _ n = shape b 
+    --         in sum $ backpermute (I3 k m n) (\(I3 p q r) -> I3 p r q) $ zipWith ((*) @(Exp Float)) (replicate (I3 All_ All_ n) a) (replicate (I3 k All_ All_) b)
+    futharkbadaccelerategood
   -- print $ flip linearIndexArray 0 . Prelude.fst $ runN @Native $ diagonal (use $ fromList (Z:.1024) [1 :: Int ..])
   -- print $ flip linearIndexArray 0 . Prelude.fst $ runN @Native $ diagonal' (use $ fromList (Z:.1024) [1 :: Int ..])
 
@@ -122,6 +124,8 @@ diagonal xs = let ys = A.map (+2) xs in T2 ys (A.map (+3) ys)
 diagonal' :: Acc (Vector Int) -> Acc (Vector Int, Vector Int)
 diagonal' xs = let ys = A.map (+2) xs in T2 ys (A.map (+3) $ barrier ys)
 
+futharkbadaccelerategood :: Acc (Vector Int) -> Acc (Vector Int, Vector Int)
+futharkbadaccelerategood = complex . map (*4)
 
 
 
