@@ -74,8 +74,8 @@ data NativeOp op where
   NScanl1      :: NativeOp (Fun' (e -> e -> e) 
                          -> In (sh, Int) e 
                          -> Out (sh, Int) e -- the local scan result
-                         -> Out (sh, Int) e -- the local fold result
-                         -> ())
+                        --  -> Out (sh, Int) e -- the local fold result
+                         -> ()) -- TODO: huh? Where would we make the two outputs differ? at evalOp they are the same, and i'm not sure writeOutput has a say in the matter
   NFold1       :: NativeOp (Fun' (e -> e -> e) -- segmented
                          -> In (sh, Int) e
                          -> Out (sh, Int) e
@@ -101,9 +101,11 @@ instance DesugarAcc NativeOp where
   mkMap         a b c   = Exec NMap         (a :>: b :>: c :>:       ArgsNil)
   mkBackpermute a b c   = Exec NBackpermute (a :>: b :>: c :>:       ArgsNil)
   mkGenerate    a b     = Exec NGenerate    (a :>: b :>:             ArgsNil)
-  mkScan LeftToRight _f Nothing _i _o
+  mkScan LeftToRight f Nothing i@(ArgArray In (ArrayR shr ty) sh buf) o
     -- If multidimensional, simply NScanl1.
-    -- Otherwise, NScanl1 followed by NScanl1 on the reductions, followed by a replicate on that result and then zipWith the first result.
+    | ShapeRsnoc (ShapeRsnoc _) <- shr
+    = Exec NScanl1 (f :>: i :>: o :>: ArgsNil)
+    | otherwise -- Otherwise, NScanl1 followed by NScanl1 on the reductions, followed by a replicate on that result and then zipWith the first result.
     = error "todo"
   -- right to left is conceptually easy once we already have order variables for backpermute. 
   -- Exclusive scans (changing array size) are weirder, require an extra 'cons' primitive
@@ -193,6 +195,7 @@ pattern OutDims l = BackendSpecific (Dims  OutArr l)
 
 -- TODO: factor out more common parts of mkGraph
 -- TODO: do the TODO's in here, and also do them in the Interpreter\
+-- TODO: constraints and bounds for the new variable(s)
 instance MakesILP NativeOp where
   type BackendVar NativeOp = NativeILPVar
   type BackendArg NativeOp = Int
@@ -227,9 +230,15 @@ instance MakesILP NativeOp where
       ( mempty & infusibleEdges .~ Set.map (-?> l) (lTargets <> lLocks)) -- add infusible edges from the producers of target and lock arrays to the permute
       (    inputConstraints l lIns
         <> ILP.c (OutDir l) .==. int (-3)) -- Permute cannot fuse with its consumer
-      ( lower (-2) (InDir l)) -- default lowerbound for the input, but not for the output (as we set it to -3)
-  mkGraph NScanl1 (_ :>: L _ (_, _lIns) :>: _ :>: _ :>: ArgsNil) _l =
-    error "todo"
+      ( lower (-2) (InDir l)
+      <> upper (InDir l) (-1) ) -- default lowerbound for the input, but not for the output (as we set it to -3). 
+  mkGraph NScanl1 (_ :>: L _ (_, lIns) :>: _ :>: ArgsNil) l =
+    Graph.Info
+      mempty
+      (    inputConstraints l lIns
+        <> ILP.c (InDir  l) .==. int (-2)
+        <> ILP.c (OutDir l) .==. int (-2))
+      (defaultBounds l)
   mkGraph NFold1 (_ :>: L _ (_, lIns) :>: _ :>: ArgsNil) l =
     Graph.Info
       mempty
@@ -280,7 +289,8 @@ instance StaticClusterAnalysis NativeOp where
     BP :: ShapeR sh1 -> ShapeR sh2 -> Fun env (sh1 -> sh2) -> BackendClusterArg2 NativeOp env arg
     NoBP :: BackendClusterArg2 NativeOp env arg
   def _ _ _ = NoBP
-  justUnit  = NoBP
+  unitToVar    = bpid
+  varToUnit    = bpid
   valueToIn    = bpid
   valueToOut   = bpid
   inToValue    = bpid
@@ -304,7 +314,7 @@ instance StaticClusterAnalysis NativeOp where
   onOp NPermute ArgsNil _ _ = NoBP :>: NoBP :>: NoBP :>: NoBP :>: NoBP :>: ArgsNil
   onOp NFold1 (bp :>: ArgsNil) _ _ = NoBP :>: fold1bp bp :>: bp :>: ArgsNil
   onOp NFold2 (bp :>: ArgsNil) _ _ = NoBP :>: fold2bp bp :>: bp :>: ArgsNil
-  onOp _ _ _ _ = error "todo"
+  onOp NScanl1 (bp :>: ArgsNil) _ _ = NoBP :>: bpid bp :>: bp :>: ArgsNil
 
 bpid :: BackendClusterArg2 NativeOp env arg -> BackendClusterArg2 NativeOp env arg'
 bpid NoBP = NoBP

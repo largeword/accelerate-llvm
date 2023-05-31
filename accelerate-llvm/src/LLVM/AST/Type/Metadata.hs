@@ -31,12 +31,13 @@ import Data.ByteString.Short                              ( ShortByteString )
 data MetadataNode
   = MetadataNode ![Maybe Metadata]
   | MetadataNodeReference {-# UNPACK #-} !LLVM.MetadataNodeID
+  deriving Show
 
 data Metadata
   = MetadataStringOperand {-# UNPACK #-} !ShortByteString
   | MetadataConstantOperand !LLVM.Constant
   | MetadataNodeOperand !MetadataNode
-
+  deriving Show
 
 -- | Convert to llvm-hs
 --

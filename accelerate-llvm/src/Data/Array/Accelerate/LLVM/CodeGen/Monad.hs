@@ -99,12 +99,15 @@ data CodeGenState = CodeGenState
   , local               :: {-# UNPACK #-} !Word                           -- a name supply
   , global              :: {-# UNPACK #-} !Word                           -- a name supply for global variables
   }
+  deriving (Show)
 
 data Block = Block
   { blockLabel          :: {-# UNPACK #-} !Label                          -- block label
   , instructions        :: Seq (LLVM.Named LLVM.Instruction)              -- stack of instructions
   , terminator          :: LLVM.Terminator                                -- block terminator
   }
+instance Show Block where
+  show (Block l i _) = "Block " <> show l <> "instructions: {" <> show i <> "}"
 
 newtype CodeGen target a = CodeGen { runCodeGen :: StateT CodeGenState (LLVM target) a }
   deriving (Functor, Applicative, Monad, MonadState CodeGenState)

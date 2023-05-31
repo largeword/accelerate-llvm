@@ -29,12 +29,14 @@ main :: Prelude.IO ()
 main = do
   -- Currently, SLV is broken and it removes permutes!
   -- putStrLn $ test @UniformScheduleFun @NativeKernel $ \xs ys -> A.permute @DIM2 @DIM1 @Int (+) xs (const $ Just_ $ I1 0) ys
-  Prelude.putStrLn $ test @UniformScheduleFun @NativeKernel $ -- backpermute @_ @_ @Float (I2 2 10) (\(I2 x y) -> I2 y x) . backpermute (I2 10 10) (\(I2 x y) -> I2 y x)
+  -- Prelude.putStrLn $ test @UniformScheduleFun @NativeKernel $ 
+  
+  -- backpermute @_ @_ @Float (I2 2 10) (\(I2 x y) -> I2 y x) . backpermute (I2 10 10) (\(I2 x y) -> I2 y x)
     -- \a b -> let I2 k m = shape a 
     --             I2 _ n = shape b 
     --         in sum $ backpermute (I3 k m n) (\(I3 p q r) -> I3 p r q) $ zipWith ((*) @(Exp Float)) (replicate (I3 All_ All_ n) a) (replicate (I3 k All_ All_) b)
-    futharkbadaccelerategood
-  -- print $ flip linearIndexArray 0 . Prelude.fst $ runN @Native $ diagonal (use $ fromList (Z:.1024) [1 :: Int ..])
+    -- futharkbadaccelerategood
+  Prelude.print $ {-flip linearIndexArray 0 $ Prelude.fst $ -} runN @Native $ scanl1 (+) (use $ fromList (Z:.2:.512) [1 :: Int ..])
   -- print $ flip linearIndexArray 0 . Prelude.fst $ runN @Native $ diagonal' (use $ fromList (Z:.1024) [1 :: Int ..])
 
   -- benchmarking:
