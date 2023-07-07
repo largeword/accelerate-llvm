@@ -34,12 +34,6 @@ import LLVM.AST.Type.Instruction
 import LLVM.AST.Type.Instruction.Atomic
 import LLVM.AST.Type.Instruction.Volatile
 import qualified LLVM.AST.Type.Instruction.RMW as RMW
-import Data.Array.Accelerate.AST (Direction (..))
-
-
-data Loop f sh where
-  End :: Loop f ()
-  Iter :: Direction -> f Int -> Loop f sh -> Loop f (sh, Int)
 
 -- | A standard 'for' loop, that steps from the start to end index executing the
 -- given function at each index.
@@ -239,110 +233,20 @@ workstealLoop counter activeThreads size doWork = do
   -- Work was already finished
   retval_ $ boolean False
 
--- workstealChunked :: ShapeR sh -> Operand (Ptr Int32) -> Operand (Ptr Int32) -> Operands sh -> (Operands sh -> Operands Int -> CodeGen Native ()) -> CodeGen Native ()
--- workstealChunked shr counter activeThreads sh doWork = do
---   let chunkSz = chunkSize shr
---   chunkCounts <- chunkCount shr sh chunkSz
---   chunkCnt <- shapeSize shr chunkCounts
---   chunkCnt' :: Operand Int32 <- instr' $ Trunc boundedType boundedType $ op TypeInt chunkCnt
-
---   workstealLoop counter activeThreads chunkCnt' $ \chunkLinearIndex -> do
---     chunkLinearIndex' <- instr' $ Ext boundedType boundedType chunkLinearIndex
---     chunkIndex <- indexOfInt shr chunkCounts (OP_Int chunkLinearIndex')
---     start <- chunkStart shr chunkSz chunkIndex
---     end <- chunkEnd shr sh chunkSz start
-
---     imapNestFromTo shr start end sh doWork
-
-
--- workstealLoopAcc
---     :: Operand (Ptr Int32)
---     -> Operand (Ptr Int32)
---     -> Operand Int32
---     -> TypeR a
---     -> Operands a
---     -> (Operand Int32 -> Operands a -> CodeGen Native (Operands a))
---     -> CodeGen Native ()
--- workstealLoopAcc counter activeThreads size ty x doWork = do
---   start    <- newBlock "worksteal.start"
---   work     <- newBlock "worksteal.loop.work"
---   exit     <- newBlock "worksteal.exit"
---   exitLast <- newBlock "worksteal.exit.last"
---   finished <- newBlock "worksteal.finished"
-
---   -- Check whether there might be work for us
---   initialCounter <- instr' $ Load scalarType NonVolatile counter
---   initialCondition <- lt singleType (OP_Int32 initialCounter) (OP_Int32 size)
---   cbr initialCondition start finished
-
---   setBlock start
---   -- Might be work for us!
---   -- First mark that this thread is doing work.
---   atomicAdd Acquire activeThreads (integral TypeInt32 1)
---   startIndex <- atomicAdd Unordered counter (integral TypeInt32 1)
---   startCondition <- lt singleType (OP_Int32 startIndex) (OP_Int32 size)
---   cbr startCondition work exit
-
---   setBlock work
---   indexName <- freshLocalName
---   let index = LocalReference type' indexName
-
---   accPrev <- fresh ty
-
---   -- Already claim the next work, to hide the latency of the atomic instruction
---   nextIndex <- atomicAdd Unordered counter (integral TypeInt32 1)
-
---   accNext <- doWork index accPrev
---   condition <- lt singleType (OP_Int32 nextIndex) (OP_Int32 size)
-
---   -- Append the phi node to the start of the 'work' block.
---   -- We can only do this now, as we need to have 'nextIndex', and know the
---   -- exit block of 'doWork'.
---   currentBlock <- getBlock
---   phi1 work indexName [(startIndex, start), (nextIndex, currentBlock)]
---   phi' ty work accPrev [(x, start), (accNext, currentBlock)]
-
---   cbr condition work exit
-
---   setBlock exit
---   -- Decrement activeThreads
---   remaining <- atomicAdd Release activeThreads (integral TypeInt32 (-1))
---   -- If 'activeThreads' was 1 (now 0), then all work is definitely done.
---   -- Note that there may be multiple threads returning true here.
---   -- It is guaranteed that at least one thread returns true.
---   allDone <- eq singleType (OP_Int32 remaining) (liftInt32 1)
---   cbr allDone exitLast finished
-
---   setBlock exitLast
---   -- Use compare-and-set to change the active-threads counter to 1:
---   --  * Out of all threads that currently see an active-thread count of 0, only
---   --    1 will succeed the CAS.
---   --  * Given that the counter is artifically increased here, no other thread
---   --    will see the counter ever drop to 0.
---   -- Hence we get a unique thread to continue the computation after this kernel.
---   casResult <- instr' $ CmpXchg TypeInt32 NonVolatile activeThreads (integral TypeInt32 0) (integral TypeInt32 1) (CrossThread, Monotonic) Monotonic
---   last <- instr' $ ExtractValue primType (TupleIdxRight TupleIdxSelf) casResult
---   retval_ last
-
---   setBlock finished
---   -- Work was already finished
---   retval_ $ boolean False
-
-workstealChunkedAcc :: ShapeR sh -> Operand (Ptr Int32) -> Operand (Ptr Int32) -> Loop Operand sh -> TypeR a -> Operands a -> (Operands sh -> Operands Int -> Operands a -> CodeGen Native (Operands a)) -> CodeGen Native ()
-workstealChunkedAcc shr counter activeThreads loop ty x doWork = do
+workstealChunked :: ShapeR sh -> Operand (Ptr Int32) -> Operand (Ptr Int32) -> Operands sh -> (Operands sh -> Operands Int -> CodeGen Native ()) -> CodeGen Native ()
+workstealChunked shr counter activeThreads sh doWork = do
   let chunkSz = chunkSize shr
-  chunkCounts <- chunkCount loop chunkSz
+  chunkCounts <- chunkCount shr sh chunkSz
   chunkCnt <- shapeSize shr chunkCounts
   chunkCnt' :: Operand Int32 <- instr' $ Trunc boundedType boundedType $ op TypeInt chunkCnt
 
   workstealLoop counter activeThreads chunkCnt' $ \chunkLinearIndex -> do
     chunkLinearIndex' <- instr' $ Ext boundedType boundedType chunkLinearIndex
     chunkIndex <- indexOfInt shr chunkCounts (OP_Int chunkLinearIndex')
-    start <- chunkStart loop chunkSz chunkIndex
-    end <- chunkEnd loop chunkSz start
+    start <- chunkStart shr chunkSz chunkIndex
+    end <- chunkEnd shr sh chunkSz start
 
-    imapNestFromTo shr start end sh (_ doWork tmp)
-
+    imapNestFromTo shr start end sh doWork
 
 chunkSize :: ShapeR sh -> sh
 chunkSize ShapeRz = ()
@@ -355,39 +259,37 @@ chunkSize (ShapeRsnoc (ShapeRsnoc (ShapeRsnoc (ShapeRsnoc sh)))) = ((((go sh, 8)
     go ShapeRz = ()
     go (ShapeRsnoc sh') = (go sh', 1)
 
-chunkCount :: Loop Operand sh -> sh -> CodeGen Native (Operands sh)
-chunkCount End () = return OP_Unit
-chunkCount (Iter LeftToRight sz loop) (chunkSh, chunkSz) = do
-  counts <- chunkCount loop chunkSh
+chunkCount :: ShapeR sh -> Operands sh -> sh -> CodeGen Native (Operands sh)
+chunkCount ShapeRz OP_Unit () = return OP_Unit
+chunkCount (ShapeRsnoc shr) (OP_Pair sh sz) (chunkSh, chunkSz) = do
+  counts <- chunkCount shr sh chunkSh
   
   -- Compute ceil(sz / chunkSz), as
   -- (sz + chunkSz - 1) `quot` chunkSz
-  sz' <- add numType (ir TypeInt sz) (liftInt $ chunkSz - 1)
+  sz' <- add numType sz (liftInt $ chunkSz - 1)
   count <- A.quot TypeInt sz' $ liftInt chunkSz
 
   return $ OP_Pair counts count
-chunkCount (Iter RightToLeft sz loop) (chunkSh, chunkSz) = undefined
 
-chunkStart :: Loop f sh -> sh -> Operands sh -> CodeGen Native (Operands sh)
-chunkStart End () OP_Unit = return OP_Unit
-chunkStart (Iter _ _ loop) (chunkSh, chunkSz) (OP_Pair sh sz) = do
-  ixs <- chunkStart loop chunkSh sh
+chunkStart :: ShapeR sh -> sh -> Operands sh -> CodeGen Native (Operands sh)
+chunkStart ShapeRz () OP_Unit = return OP_Unit
+chunkStart (ShapeRsnoc shr) (chunkSh, chunkSz) (OP_Pair sh sz) = do
+  ixs <- chunkStart shr chunkSh sh
   ix <- mul numType sz $ liftInt chunkSz
   return $ OP_Pair ixs ix
 
 chunkEnd
-  :: Loop Operand sh -- Array size
+  :: ShapeR sh
+  -> Operands sh -- Array sizee
   -> sh          -- Chunk size
   -> Operands sh -- Chunk start
   -> CodeGen Native (Operands sh) -- Chunk end
-chunkEnd End () OP_Unit = return OP_Unit
-chunkEnd (Iter dir sz0 loop) (sh1, sz1) (OP_Pair sh2 sz2) 
-  | LeftToRight <- dir = do
-  sh3 <- chunkStart loop sh1 sh2
+chunkEnd ShapeRz OP_Unit () OP_Unit = return OP_Unit
+chunkEnd (ShapeRsnoc shr) (OP_Pair sh0 sz0) (sh1, sz1) (OP_Pair sh2 sz2) = do
+  sh3 <- chunkStart shr sh1 sh2
   sz3 <- add numType sz2 $ liftInt sz1
-  sz3' <- A.min singleType sz3 $ ir TypeInt sz0
+  sz3' <- A.min singleType sz3 sz0
   return $ OP_Pair sh3 sz3'
-  | otherwise = undefined
 
 atomicAdd :: MemoryOrdering -> Operand (Ptr Int32) -> Operand Int32 -> CodeGen Native (Operand Int32)
 atomicAdd ordering ptr increment = do
