@@ -53,20 +53,20 @@ import Data.Typeable
 -- Construct a new array by applying a function to each index. Each thread
 -- processes multiple adjacent elements.
 --
-mkGenerate
-    :: forall genv sh e.
-       UID
-    -> Label
-    -> Env AccessGroundR genv
-    -> Arg genv (Out sh e)
-    -> Arg genv (Fun' (sh -> e))
-    -> LLVM Native (Module (KernelType genv))
-mkGenerate uid name env array@(ArgArray _ (ArrayR shr _) sh _) (ArgFun fun)
-  = codeGenFunction uid "generate" (LLVM.Lam argTp "arg") $ do
-      extractEnv
-      let sh' = aprjParameters (shapeExpVars shr sh) gamma
-      workstealChunked shr workstealIndex workstealActiveThreads sh' $ \ix i -> do
-        r <- app1 (llvmOfFun1 fun gamma) ix
-        writeArray TypeInt gamma array i r
-  where
-    (argTp, extractEnv, workstealIndex, workstealActiveThreads, gamma) = bindHeaderEnv env
+-- mkGenerate
+--     :: forall genv sh e.
+--        UID
+--     -> Label
+--     -> Env AccessGroundR genv
+--     -> Arg genv (Out sh e)
+--     -> Arg genv (Fun' (sh -> e))
+--     -> LLVM Native (Module (KernelType genv))
+-- mkGenerate uid name env array@(ArgArray _ (ArrayR shr _) sh _) (ArgFun fun)
+--   = codeGenFunction uid "generate" (LLVM.Lam argTp "arg") $ do
+--       extractEnv
+--       let sh' = aprjParameters (shapeExpVars shr sh) gamma
+--       workstealChunked shr workstealIndex workstealActiveThreads sh' $ \ix i -> do
+--         r <- app1 (llvmOfFun1 fun gamma) ix
+--         writeArray TypeInt gamma array i r
+--   where
+--     (argTp, extractEnv, workstealIndex, workstealActiveThreads, gamma) = bindHeaderEnv env

@@ -166,9 +166,9 @@ iterFromTo tp start end seed body =
   Loop.iterFromStepTo tp start (liftInt 1) end seed body
 
 workstealLoop
-    :: Operand (Ptr Int32)
-    -> Operand (Ptr Int32)
-    -> Operand Int32
+    :: Operand (Ptr Int32)                  -- index into work
+    -> Operand (Ptr Int32)                  -- number of threads that are working
+    -> Operand Int32                        -- size of total work
     -> (Operand Int32 -> CodeGen Native ())
     -> CodeGen Native ()
 workstealLoop counter activeThreads size doWork = do

@@ -42,7 +42,7 @@ import Data.Array.Accelerate.Trafo.Var (DeclareVars(..), declareVars)
 import Data.Array.Accelerate.Representation.Ground (buffersR, typeRtoGroundsR)
 import Data.Array.Accelerate.AST.LeftHandSide
 import Data.Array.Accelerate.Trafo.Operation.Substitution (aletUnique, alet, weaken, LHS (..), mkLHS)
-import Data.Array.Accelerate.Representation.Shape (ShapeR (..), shapeType)
+import Data.Array.Accelerate.Representation.Shape (ShapeR (..), shapeType, rank)
 import Data.Array.Accelerate.Representation.Type (TypeR, TupR (..))
 import Data.Array.Accelerate.Type (scalarType, Word8, scalarTypeWord8, scalarTypeInt)
 import Data.Array.Accelerate.Analysis.Match
@@ -187,19 +187,21 @@ data NativeILPVar = Dims InOut Label
                   -- 3 is segmented along the second dimension, e.g. input of a fused folddim followed by first stage of 1-dimensional fold
                   -- 4 is 2 dimensions per thread, etc
                   -- note that this is about _logical_ threads; if there are less physical ones present then they will perform work stealing, so this is really the (minimum) size of each bucket in the work stealing queue
+                  | DepthPerThread InOut Label
   deriving (Eq, Ord, Show)
-pattern InDims, OutDims :: Label -> Graph.Var NativeOp
-pattern InDims  l = BackendSpecific (Dims   InArr l)
-pattern OutDims l = BackendSpecific (Dims  OutArr l)
-
+pattern InDims, OutDims {- InDepth, OutDepth -}:: Label -> Graph.Var NativeOp
+pattern InDims   l = BackendSpecific (Dims            InArr l)
+pattern OutDims  l = BackendSpecific (Dims           OutArr l)
+-- pattern InDepth  l = BackendSpecific (DepthPerThread  InArr l)
+-- pattern OutDepth l = BackendSpecific (DepthPerThread OutArr l)
 
 -- TODO: factor out more common parts of mkGraph
 -- TODO: do the TODO's in here, and also do them in the Interpreter\
 -- TODO: constraints and bounds for the new variable(s)
 instance MakesILP NativeOp where
   type BackendVar NativeOp = NativeILPVar
-  type BackendArg NativeOp = Int
-  data BackendClusterArg NativeOp a = None
+  type BackendArg NativeOp = (Int, Depth) -- direction, depth
+  data BackendClusterArg NativeOp a = BCAN Depth
 
   mkGraph NBackpermute (_ :>: L (ArgArray In (ArrayR _shrI _) _ _) (_, lIns) :>: L (ArgArray Out (ArrayR _shrO _) _ _)_ :>: ArgsNil) l@(Label i _) =
     Graph.Info
@@ -218,12 +220,13 @@ instance MakesILP NativeOp where
       mempty
       mempty
       (defaultBounds l)
-  mkGraph NMap (_ :>: L _ (_, lIns) :>: _ :>: ArgsNil) l =
+  mkGraph NMap (_ :>: L (ArgArray In (ArrayR shr _) _ _) (_, lIns) :>: _ :>: ArgsNil) l =
     Graph.Info
       mempty
       (    inputConstraints l lIns
         <> ILP.c (InDir  l) .==. ILP.c (OutDir  l)
-        <> ILP.c (InDims l) .==. ILP.c (OutDims l))
+        <> ILP.c (InDims l) .==. ILP.c (OutDims l)
+        <> rankifmanifest shr l)
       (defaultBounds l)
   mkGraph NPermute (_ :>: L _ (_, lTargets) :>: L _ (_, lLocks) :>: _ :>: L _ (_, lIns) :>: ArgsNil) l =
     Graph.Info
@@ -232,12 +235,14 @@ instance MakesILP NativeOp where
         <> ILP.c (OutDir l) .==. int (-3)) -- Permute cannot fuse with its consumer
       ( lower (-2) (InDir l)
       <> upper (InDir l) (-1) ) -- default lowerbound for the input, but not for the output (as we set it to -3). 
-  mkGraph NScanl1 (_ :>: L _ (_, lIns) :>: _ :>: ArgsNil) l =
+  mkGraph NScanl1 (_ :>: L (ArgArray In (ArrayR shr _) _ _) (_, lIns) :>: _ :>: ArgsNil) l =
     Graph.Info
       mempty
       (    inputConstraints l lIns
         <> ILP.c (InDir  l) .==. int (-2)
-        <> ILP.c (OutDir l) .==. int (-2))
+        <> ILP.c (OutDir l) .==. int (-2)
+        <> ILP.c (InDims l) .==. ILP.c (OutDims l)
+        <> rankdim shr l)
       (defaultBounds l)
   mkGraph NFold1 (_ :>: L _ (_, lIns) :>: _ :>: ArgsNil) l =
     Graph.Info
@@ -256,15 +261,15 @@ instance MakesILP NativeOp where
       (defaultBounds l)
 
   labelLabelledArg :: M.Map (Graph.Var NativeOp) Int -> Label -> LabelledArg env a -> LabelledArgOp NativeOp env a
-  labelLabelledArg vars l (L x@(ArgArray In  _ _ _) y) = LOp x y $ vars M.! InDir  l
-  labelLabelledArg vars l (L x@(ArgArray Out _ _ _) y) = LOp x y $ vars M.! OutDir l
-  labelLabelledArg _ _ (L x y) = LOp x y 0
+  labelLabelledArg vars l (L x@(ArgArray In  _ _ _) y) = LOp x y $ (vars M.! InDir  l, vars M.!  InDims l)
+  labelLabelledArg vars l (L x@(ArgArray Out _ _ _) y) = LOp x y $ (vars M.! OutDir l, vars M.! OutDims l)
+  labelLabelledArg _ _ (L x y) = LOp x y (0,0)
   getClusterArg :: LabelledArgOp NativeOp env a -> BackendClusterArg NativeOp a
-  getClusterArg _ = None
+  getClusterArg (LOp _ _ (_, d)) = BCAN d
   -- For each label: If the output is manifest, then its direction is negative (i.e. not in a backpermuted order)
   finalize = foldMap $ \l -> timesN (manifest l) .>. ILP.c (OutDir l)
 
-  encodeBackendClusterArg None = intHost $(hashQ ("None" :: String))
+  encodeBackendClusterArg (BCAN i) = intHost $(hashQ ("BCAN" :: String)) <> intHost i
 
 inputConstraints :: HasCallStack => Label -> Labels -> Constraint NativeOp
 inputConstraints l = foldMap $ \lIn -> 
@@ -272,6 +277,14 @@ inputConstraints l = foldMap $ \lIn ->
     <> (-1) .*. timesN (fused lIn l) .<=. ILP.c (InDir  l) .-. ILP.c (OutDir  lIn)
     <>          timesN (fused lIn l) .>=. ILP.c (InDims l) .-. ILP.c (OutDims lIn)
     <> (-1) .*. timesN (fused lIn l) .<=. ILP.c (InDims l) .-. ILP.c (OutDims lIn)
+
+rankifmanifest :: ShapeR sh -> Label -> Constraint NativeOp
+rankifmanifest shr l = ILP.int (rank shr) .+. timesN (manifest l) .>=. ILP.c (InDims l)
+                    <> ILP.int (rank shr) .-. timesN (manifest l) .<=. ILP.c (InDims l)
+        
+rankdim :: ShapeR sh -> Label -> Constraint NativeOp
+rankdim shr l = ILP.int (rank shr) .==. ILP.c (InDims l)
+        
 
 defaultBounds :: Label -> Bounds NativeOp
 defaultBounds l = lower (-2) (InDir l) <> lower (-2) (OutDir l) <> lower 0 (InDims l) <> lower 0 (OutDims l)
@@ -281,57 +294,60 @@ instance NFData' (BackendClusterArg NativeOp) where
   rnf' !_ = ()
 
 instance ShrinkArg (BackendClusterArg NativeOp) where
-  shrinkArg _ None = None
-  deadArg None = None
+  shrinkArg _ (BCAN i) = BCAN i
+  deadArg (BCAN _) = BCAN 0
 
+data IndexPermutation env where
+  BP :: ShapeR sh1 -> ShapeR sh2 -> Fun env (sh1 -> sh2) -> IndexPermutation env
+type Depth = Int
 instance StaticClusterAnalysis NativeOp where
   data BackendClusterArg2 NativeOp env arg where
-    BP :: ShapeR sh1 -> ShapeR sh2 -> Fun env (sh1 -> sh2) -> BackendClusterArg2 NativeOp env arg
-    NoBP :: BackendClusterArg2 NativeOp env arg
-  def _ _ _ = NoBP
-  unitToVar    = bpid
-  varToUnit    = bpid
-  valueToIn    = bpid
-  valueToOut   = bpid
-  inToValue    = bpid
-  outToValue   = bpid
-  outToSh      = bpid
-  shToOut      = bpid
-  shToValue    = bpid
-  varToValue   = bpid
-  varToSh      = bpid
-  shToVar      = bpid
-  shrinkOrGrow = bpid
-  addTup       = bpid
+    BCAN2 :: Maybe (IndexPermutation env) -> Depth -> BackendClusterArg2 NativeOp env arg
+  def _ _ (BCAN i) = BCAN2 Nothing i
+  unitToVar    = bcan2id
+  varToUnit    = bcan2id
+  valueToIn    = bcan2id
+  valueToOut   = bcan2id
+  inToValue    = bcan2id
+  outToValue   = bcan2id
+  outToSh      = bcan2id
+  shToOut      = bcan2id
+  shToValue    = bcan2id
+  varToValue   = bcan2id
+  varToSh      = bcan2id
+  shToVar      = bcan2id
+  shrinkOrGrow = bcan2id
+  addTup       = bcan2id
   -- onOp propagates the backpermute information from the outputs to the inputs of each operation
-  onOp NMap (bp :>: ArgsNil) _ _ = NoBP :>: bpid bp :>: bp :>: ArgsNil
-  onOp NBackpermute (bp@(BP shr1 shr2 g) :>: ArgsNil) (ArgFun f :>: ArgArray In (ArrayR shrI _) _ _ :>: ArgArray Out (ArrayR shrO _) _ _ :>: ArgsNil) _
-    | Just Refl <- matchShapeR shrO shr2  = NoBP :>: BP shr1 shrI (compose f g) :>: bp :>: ArgsNil
+  onOp NMap (bp :>: ArgsNil) _ _ = BCAN2 Nothing undefined :>: bcan2id bp :>: bp :>: ArgsNil
+  onOp NBackpermute (BCAN2 (Just bp@(BP shr1 shr2 g)) d :>: ArgsNil) (ArgFun f :>: ArgArray In (ArrayR shrI _) _ _ :>: ArgArray Out (ArrayR shrO _) _ _ :>: ArgsNil) _
+    | Just Refl <- matchShapeR shrO shr2  = BCAN2 Nothing 0 :>: BCAN2 (Just (BP shr1 shrI (compose f g))) d :>: BCAN2 (Just bp) d :>: ArgsNil
     | otherwise = error "BP shapeR doesn't match backpermute output shape"
-  onOp NBackpermute (NoBP           :>: ArgsNil) (ArgFun f :>: ArgArray In (ArrayR shrI _) _ _ :>: ArgArray Out (ArrayR shrO _) _ _ :>: ArgsNil) _
-                                          = NoBP :>: BP shrO shrI f             :>: NoBP           :>: ArgsNil    
-  onOp NGenerate (bp :>: ArgsNil) _ _ = bpid bp :>: bp :>: ArgsNil -- storing the bp in the function argument. Probably not required, could just take it from the array one during codegen
-  onOp NPermute ArgsNil _ _ = NoBP :>: NoBP :>: NoBP :>: NoBP :>: NoBP :>: ArgsNil
-  onOp NFold1 (bp :>: ArgsNil) _ _ = NoBP :>: fold1bp bp :>: bp :>: ArgsNil
-  onOp NFold2 (bp :>: ArgsNil) _ _ = NoBP :>: fold2bp bp :>: bp :>: ArgsNil
-  onOp NScanl1 (bp :>: ArgsNil) _ _ = NoBP :>: bpid bp :>: bp :>: ArgsNil
+  onOp NBackpermute (BCAN2 Nothing d           :>: ArgsNil) (ArgFun f :>: ArgArray In (ArrayR shrI _) _ _ :>: ArgArray Out (ArrayR shrO _) _ _ :>: ArgsNil) _
+                                          = BCAN2 Nothing d :>: BCAN2 (Just (BP shrO shrI f)) d             :>: BCAN2 Nothing d           :>: ArgsNil    
+  onOp NGenerate (bp :>: ArgsNil) _ _ = bcan2id bp :>: bp :>: ArgsNil -- storing the bp in the function argument. Probably not required, could just take it from the array one during codegen
+  onOp NPermute ArgsNil (_:>:_:>:_:>:_:>:ArgArray In (ArrayR shR _) _ _ :>:ArgsNil) _ = 
+    BCAN2 Nothing 0 :>: BCAN2 Nothing 0 :>: BCAN2 Nothing 0 :>: BCAN2 Nothing 0 :>: BCAN2 Nothing (rank shR) :>: ArgsNil
+  onOp NFold1  (bp :>: ArgsNil) _ _ = BCAN2 Nothing 0 :>: fold1bp bp :>: bp :>: ArgsNil
+  onOp NFold2  (bp :>: ArgsNil) _ _ = BCAN2 Nothing 0 :>: fold2bp bp :>: bp :>: ArgsNil
+  onOp NScanl1 (bp :>: ArgsNil) _ _ = BCAN2 Nothing 0 :>: bcan2id bp :>: bp :>: ArgsNil
 
-bpid :: BackendClusterArg2 NativeOp env arg -> BackendClusterArg2 NativeOp env arg'
-bpid NoBP = NoBP
-bpid (BP a b c) = BP a b c
+bcan2id :: BackendClusterArg2 NativeOp env arg -> BackendClusterArg2 NativeOp env arg'
+bcan2id (BCAN2 Nothing i) = BCAN2 Nothing i
+bcan2id (BCAN2 (Just (BP a b c)) i) = BCAN2 (Just (BP a b c)) i
 
 fold1bp :: BackendClusterArg2 NativeOp env (Out sh e) -> BackendClusterArg2 NativeOp env (In sh e)
-fold1bp NoBP = NoBP
-fold1bp (BP shr1 shr2 g) = BP shr1 shr2 $ error "todo: multiply the innermost (outer constructor) dimension by the workstealsize" g
+fold1bp (BCAN2 Nothing i) = BCAN2 Nothing i
+fold1bp (BCAN2 (Just (BP shr1 shr2 g)) i) = flip BCAN2 i $ Just $ BP shr1 shr2 $ error "todo: multiply the innermost (outer constructor) dimension by the workstealsize" g
 
 fold2bp :: BackendClusterArg2 NativeOp env (Out sh e) -> BackendClusterArg2 NativeOp env (In (sh,Int) e)
-fold2bp NoBP = NoBP
-fold2bp (BP shr1 shr2 g) = BP (ShapeRsnoc shr1) (ShapeRsnoc shr2) $ error "todo: ignore the innermost index, apply the function, then add the index again" g
-
+fold2bp (BCAN2 Nothing i) = BCAN2 Nothing (i-1)
+fold2bp (BCAN2 (Just (BP shr1 shr2 g)) i) = flip BCAN2 (i-1) $ Just $ BP (ShapeRsnoc shr1) (ShapeRsnoc shr2) $ error "todo: ignore the innermost index, apply the function, then add the index again" g
 
 
 instance Eq (BackendClusterArg2 NativeOp env arg) where
-  NoBP == NoBP = True
+  BCAN2 p i == BCAN2 p' i' = p == p' && i == i'
+instance Eq (IndexPermutation env) where
   (BP shr1 shr2 f) == (BP shr1' shr2' f')
     | Just Refl <- matchShapeR shr1 shr1'
     , Just Refl <- matchShapeR shr2 shr2'
