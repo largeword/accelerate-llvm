@@ -76,9 +76,9 @@ data NativeOp op where
                          -> Out (sh, Int) e -- the local scan result
                         --  -> Out (sh, Int) e -- the local fold result
                          -> ()) -- TODO: huh? Where would we make the two outputs differ? at evalOp they are the same, and i'm not sure writeOutput has a say in the matter
-  NFold1       :: NativeOp (Fun' (e -> e -> e) -- segmented
-                         -> In (sh, Int) e
-                         -> Out (sh, Int) e
+  NFold1       :: NativeOp (Fun' (e -> e -> e) -- segmented, TODO: how to represent the output being 'one per thread on each row'?
+                         -> In  ((), Int) e
+                         -> Out ((), Int) e
                          -> ())
   NFold2       :: NativeOp (Fun' (e -> e -> e) -- sequential
                          -> In (sh, Int) e
@@ -180,14 +180,16 @@ instance EncodeOperation NativeOp where
   encodeOperation NFold1       = intHost $(hashQ ("Fold-1" :: String))
   encodeOperation NFold2       = intHost $(hashQ ("Fold-2" :: String))
 
-data NativeILPVar = Dims InOut Label
+                -- vvvv old vvv
                   -- 0 means maximal parallelism; each thread only gets 1 element, e.g. output of the first stage of 1-dimensional fold
                   -- 1 is segmented along the innermost dimension into nthreads equal parts, e.g. input of the first stage of 1-dimensional fold
                   -- 2 is one row for each thread
                   -- 3 is segmented along the second dimension, e.g. input of a fused folddim followed by first stage of 1-dimensional fold
                   -- 4 is 2 dimensions per thread, etc
                   -- note that this is about _logical_ threads; if there are less physical ones present then they will perform work stealing, so this is really the (minimum) size of each bucket in the work stealing queue
-                  | DepthPerThread InOut Label
+                -- ^^^^ old ^^^
+data NativeILPVar = Dims InOut Label
+                  -- | DepthPerThread InOut Label
   deriving (Eq, Ord, Show)
 pattern InDims, OutDims {- InDepth, OutDepth -}:: Label -> Graph.Var NativeOp
 pattern InDims   l = BackendSpecific (Dims            InArr l)
@@ -203,11 +205,13 @@ instance MakesILP NativeOp where
   type BackendArg NativeOp = (Int, Depth) -- direction, depth
   data BackendClusterArg NativeOp a = BCAN Depth
 
-  mkGraph NBackpermute (_ :>: L (ArgArray In (ArrayR _shrI _) _ _) (_, lIns) :>: L (ArgArray Out (ArrayR _shrO _) _ _)_ :>: ArgsNil) l@(Label i _) =
+  mkGraph NBackpermute (_ :>: L (ArgArray In (ArrayR _shrI _) _ _) (_, lIns) :>: L (ArgArray Out (ArrayR shrO _) _ _) _ :>: ArgsNil) l@(Label i _) =
     Graph.Info
       mempty
       (    inputConstraints l lIns
-        <> ILP.c (InDir l) .==. int i 
+        <> ILP.c (InDir l) .==. int i
+        <> ILP.c (InDims l) .==. ILP.c (OutDims l)
+        <> rankifmanifest shrO l
           -- .+. timesN (int 3 .+. c (OutDir l)) 
           -- When we switch to gather, like in the paper, we need to add this term.
           -- 4 + dir is always positive, and this is exactly why we (elsewhere) define `n` as `5+(size nodes)`
@@ -215,10 +219,10 @@ instance MakesILP NativeOp where
           -- so if we want this we need to change inputConstraints and finalise
         )-- <> c (InDims l) .+. int (rank shrO) .==. c (OutDims l) .+. int (rank shrI))
       (defaultBounds l)
-  mkGraph NGenerate _ l =
+  mkGraph NGenerate (_ :>: L (ArgArray Out (ArrayR shr _) _ _) _ :>: ArgsNil) l =
     Graph.Info
       mempty
-      mempty
+      (rankifmanifest shr l)
       (defaultBounds l)
   mkGraph NMap (_ :>: L (ArgArray In (ArrayR shr _) _ _) (_, lIns) :>: _ :>: ArgsNil) l =
     Graph.Info
@@ -228,10 +232,11 @@ instance MakesILP NativeOp where
         <> ILP.c (InDims l) .==. ILP.c (OutDims l)
         <> rankifmanifest shr l)
       (defaultBounds l)
-  mkGraph NPermute (_ :>: L _ (_, lTargets) :>: L _ (_, lLocks) :>: _ :>: L _ (_, lIns) :>: ArgsNil) l =
+  mkGraph NPermute (_ :>: L _ (_, lTargets) :>: L _ (_, lLocks) :>: _ :>: L (ArgArray In (ArrayR shr _) _ _) (_, lIns) :>: ArgsNil) l =
     Graph.Info
       ( mempty & infusibleEdges .~ Set.map (-?> l) (lTargets <> lLocks)) -- add infusible edges from the producers of target and lock arrays to the permute
       (    inputConstraints l lIns
+        <> ILP.c (InDims l) .==. int (rank shr)
         <> ILP.c (OutDir l) .==. int (-3)) -- Permute cannot fuse with its consumer
       ( lower (-2) (InDir l)
       <> upper (InDir l) (-1) ) -- default lowerbound for the input, but not for the output (as we set it to -3). 
@@ -242,27 +247,29 @@ instance MakesILP NativeOp where
         <> ILP.c (InDir  l) .==. int (-2)
         <> ILP.c (OutDir l) .==. int (-2)
         <> ILP.c (InDims l) .==. ILP.c (OutDims l)
-        <> rankdim shr l)
+        <> ILP.c (InDims l) .==. int (rank shr))
       (defaultBounds l)
   mkGraph NFold1 (_ :>: L _ (_, lIns) :>: _ :>: ArgsNil) l =
     Graph.Info
       mempty
       (    inputConstraints l lIns
         <> ILP.c (InDir   l) .==. ILP.c (OutDir l)
-        <> ILP.c (InDims  l) .==. int 1
-        <> ILP.c (OutDims l) .==. int 0)
+        -- <> ILP.c (InDims  l) .==. int 1 -- TODO redesign fold1
+        -- <> ILP.c (OutDims l) .==. int 0
+        )
       (defaultBounds l)
-  mkGraph NFold2 (_ :>: L _ (_, lIns) :>: _ :>: ArgsNil) l =
+  mkGraph NFold2 (_ :>: L (ArgArray In (ArrayR (ShapeRsnoc shr) _) _ _) (_, lIns) :>: _ :>: ArgsNil) l =
     Graph.Info
       mempty
       (    inputConstraints l lIns
         <> ILP.c (InDir  l) .==. ILP.c (OutDir l)
-        <> ILP.c (InDims l) .==. int 2 .+. ILP.c (OutDims l)) -- Difference of 2, because a full dimension is reduced
+        <> ILP.c (InDims l) .==. int 1 .+. ILP.c (OutDims l)
+        <> rankifmanifest (ShapeRsnoc shr) l)
       (defaultBounds l)
 
   labelLabelledArg :: M.Map (Graph.Var NativeOp) Int -> Label -> LabelledArg env a -> LabelledArgOp NativeOp env a
-  labelLabelledArg vars l (L x@(ArgArray In  _ _ _) y) = LOp x y $ (vars M.! InDir  l, vars M.!  InDims l)
-  labelLabelledArg vars l (L x@(ArgArray Out _ _ _) y) = LOp x y $ (vars M.! OutDir l, vars M.! OutDims l)
+  labelLabelledArg vars l (L x@(ArgArray In  _ _ _) y) = LOp x y (vars M.! InDir  l, vars M.!  InDims l)
+  labelLabelledArg vars l (L x@(ArgArray Out _ _ _) y) = LOp x y (vars M.! OutDir l, vars M.! OutDims l)
   labelLabelledArg _ _ (L x y) = LOp x y (0,0)
   getClusterArg :: LabelledArgOp NativeOp env a -> BackendClusterArg NativeOp a
   getClusterArg (LOp _ _ (_, d)) = BCAN d
@@ -282,8 +289,6 @@ rankifmanifest :: ShapeR sh -> Label -> Constraint NativeOp
 rankifmanifest shr l = ILP.int (rank shr) .+. timesN (manifest l) .>=. ILP.c (InDims l)
                     <> ILP.int (rank shr) .-. timesN (manifest l) .<=. ILP.c (InDims l)
         
-rankdim :: ShapeR sh -> Label -> Constraint NativeOp
-rankdim shr l = ILP.int (rank shr) .==. ILP.c (InDims l)
         
 
 defaultBounds :: Label -> Bounds NativeOp
@@ -341,8 +346,8 @@ fold1bp (BCAN2 Nothing i) = BCAN2 Nothing i
 fold1bp (BCAN2 (Just (BP shr1 shr2 g)) i) = flip BCAN2 i $ Just $ BP shr1 shr2 $ error "todo: multiply the innermost (outer constructor) dimension by the workstealsize" g
 
 fold2bp :: BackendClusterArg2 NativeOp env (Out sh e) -> BackendClusterArg2 NativeOp env (In (sh,Int) e)
-fold2bp (BCAN2 Nothing i) = BCAN2 Nothing (i-1)
-fold2bp (BCAN2 (Just (BP shr1 shr2 g)) i) = flip BCAN2 (i-1) $ Just $ BP (ShapeRsnoc shr1) (ShapeRsnoc shr2) $ error "todo: ignore the innermost index, apply the function, then add the index again" g
+fold2bp (BCAN2 Nothing i) = BCAN2 Nothing (i+1)
+fold2bp (BCAN2 (Just (BP shr1 shr2 g)) i) = flip BCAN2 (i+1) $ Just $ BP (ShapeRsnoc shr1) (ShapeRsnoc shr2) $ error "todo: ignore the innermost index, apply the function, then add the index again" g
 
 
 instance Eq (BackendClusterArg2 NativeOp env arg) where

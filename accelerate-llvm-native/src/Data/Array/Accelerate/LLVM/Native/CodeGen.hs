@@ -59,7 +59,7 @@ import Unsafe.Coerce (unsafeCoerce)
 import Data.Array.Accelerate.LLVM.CodeGen.Sugar (app1, IROpenFun2 (app2))
 import Data.Array.Accelerate.LLVM.CodeGen.Exp (llvmOfFun1, intOfIndex, llvmOfFun2)
 import Data.Array.Accelerate.Trafo.Desugar (ArrayDescriptor(..))
-import Data.Array.Accelerate.LLVM.CodeGen.Arithmetic ( fromJust, isJust, when, ifThenElse, just, add, lt, mul, nothing )
+import Data.Array.Accelerate.LLVM.CodeGen.Arithmetic ( when, ifThenElse, just, add, lt, mul, eq, fromJust, isJust )
 import Data.Array.Accelerate.Analysis.Match (matchShapeR)
 import Data.Array.Accelerate.Trafo.Exp.Substitution (compose)
 import Data.Array.Accelerate.AST.Operation (groundToExpVar)
@@ -265,7 +265,7 @@ instance EvalOp NativeOp where
   evalOp (d,_,_) _ NMap gamma (Push (Push (Push Env.Empty (BAE _ _)) (BAE (Value' x' (Shape' shr sh)) (BCAN2 _ d'))) (BAE f _))
     = lift $ Push Env.Empty . FromArg . flip Value' (Shape' shr sh) <$> case x' of
       CJ x | d == d' -> CJ <$> app1 (llvmOfFun1 @Native f gamma) x
-      _   -> Debug.Trace.trace (show d <> "/=" <> show d') $ pure CN
+      _   -> pure CN
   evalOp _ _ NBackpermute _ (Push (Push (Push Env.Empty (BAE (Shape' shr sh) _)) (BAE (Value' x _) _)) _)
     = lift $ pure $ Push Env.Empty $ FromArg $ Value' x $ Shape' shr sh
   evalOp (d',_,is) _ NGenerate gamma (Push (Push Env.Empty (BAE (Shape' shr ~(CJ sh)) _)) (BAE f (BCAN2 Nothing d)))
@@ -301,19 +301,35 @@ instance EvalOp NativeOp where
         pure Env.Empty
     | d == d' = error "case above?"
     | otherwise = pure Env.Empty
-  evalOp (d',_,_) l NScanl1 gamma (Push (Push _ (BAE (Value' x' sh) (BCAN2 Nothing d))) (BAE f' _))
+  evalOp (d',_,~(inner:_)) l NScanl1 gamma (Push (Push _ (BAE (Value' x' sh) (BCAN2 Nothing d))) (BAE f' _))
     | f <- llvmOfFun2 @Native f' gamma
     , Lam (lhsToTupR -> ty :: TypeR e) _ <- f'
     , CJ x <- x'
     , d == d'
     = StateT $ \acc -> do
-        let (Exists (unsafeCoerce @(Operands _) @(Operands (PrimMaybe e)) -> y), tyr) = acc M.! l
-        z <- ifThenElse (maybeTy ty, isJust y) (just <$> app2 f (fromJust y) x) (pure $ just x)
-        pure (Push Env.Empty $ FromArg (Value' (CJ $ fromJust z) sh), M.adjust (const (Exists z, tyr)) l acc)
-    | otherwise = Debug.Trace.trace (show d <> "/=" <> show d') $ pure $ Push Env.Empty $ FromArg (Value' CN sh)
+        let (Exists (unsafeCoerce @(Operands _) @(Operands e) -> accX), eTy) = acc M.! l
+        z <- ifThenElse (ty, eq singleType inner (constant typerInt 0)) (pure x) (app2 f accX x) -- note: need to apply the accumulator as the _left_ argument to the function
+        pure (Push Env.Empty $ FromArg (Value' (CJ z) sh), M.adjust (const (Exists z, eTy)) l acc)
+    | otherwise = pure $ Push Env.Empty $ FromArg (Value' CN sh)
   evalOp _ _ NScanl1 gamma (Push (Push _ (BAE (Value' x' sh) (BCAN2 (Just (BP{})) d))) (BAE f' _)) = error "backpermuted scan"
-  evalOp i l NFold1 gamma args = error "todo"
-  evalOp i l NFold2 gamma args = error "todo"
+  evalOp i l NFold1 gamma args = error "todo: fold1"
+  evalOp (d',_,~(inner:_)) l NFold2 gamma (Push (Push _ (BAE (Value' x' sh@(Shape' (ShapeRsnoc shr') ~(CJ (OP_Pair sh' _)))) (BCAN2 Nothing d))) (BAE f' _))
+    | f <- llvmOfFun2 @Native f' gamma
+    , Lam (lhsToTupR -> ty :: TypeR e) _ <- f'
+    , CJ x <- x'
+    , d == d'
+    = StateT $ \acc -> do
+        let (Exists (unsafeCoerce @(Operands _) @(Operands e) -> accX), eTy) = acc M.! l
+        z <- ifThenElse (ty, eq singleType inner (constant typerInt 0)) (pure x) (app2 f accX x) -- note: need to apply the accumulator as the _left_ argument to the function
+        pure (Push Env.Empty $ FromArg (Value' (CJ z) (Shape' shr' (CJ sh'))), M.adjust (const (Exists z, eTy)) l acc)
+    | f <- llvmOfFun2 @Native f' gamma
+    , Lam (lhsToTupR -> ty :: TypeR e) _ <- f'
+    , d == d'+1 -- the fold was in the iteration above; we grab the result from the accumulator now
+    = StateT $ \acc -> do
+        let (Exists (unsafeCoerce @(Operands _) @(Operands e) -> x), _) = acc M.! l
+        pure (Push Env.Empty $ FromArg (Value' (CJ x) (Shape' shr' (CJ sh'))), acc)
+    | otherwise = pure $ Push Env.Empty $ FromArg (Value' CN (Shape' shr' (CJ sh')))
+  evalOp _ _ NFold2 _ _ = error "backpermuted fold1"
 
 multidim :: ShapeR sh -> [Operands Int] -> Operands sh
 multidim ShapeRz [] = OP_Unit
@@ -390,10 +406,14 @@ instance EvalOp (JustAccumulator NativeOp) where
   readInput ty _ _ _ _ _ = pure $ TupRsingle ty
   writeOutput _ _ _ _ _ _ = pure ()
 
-  evalOp () l (JA NScanl1) _ (Push (Push _ (BAE (Value' (ty :: TypeR e) sh) _)) (BAE f _))
+  evalOp () l (JA NScanl1) _ (Push (Push _ (BAE (Value' ty sh) _)) (BAE f _))
     = StateT $ \acc -> do
-        let thing = nothing (zeroes ty)
-        pure (Push Env.Empty $ FromArg (Value' undefined sh), M.insert l (Exists thing, Exists (maybeTy ty :: TypeR (PrimMaybe e))) acc)
+        let thing = zeroes ty
+        pure (Push Env.Empty $ FromArg (Value' undefined sh), M.insert l (Exists thing, Exists ty) acc)
+  evalOp () l (JA NFold2) _ (Push (Push _ (BAE (Value' ty sh) _)) (BAE f _))
+    = StateT $ \acc -> do
+        let thing = zeroes ty
+        pure (Push Env.Empty $ FromArg (Value' undefined undefined), M.insert l (Exists thing, Exists ty) acc)
   evalOp () _ (JA NMap) _ (Push (Push (Push Env.Empty (BAE _ _)) (BAE (Value' x (Shape' shr sh)) _)) (BAE _ _))
     = lift $ pure $ Push Env.Empty $ FromArg $ Value' undefined (Shape' shr sh)
   evalOp () _ (JA NBackpermute) _ (Push (Push (Push Env.Empty (BAE (Shape' shr sh) _)) (BAE (Value' x _) _)) _)
