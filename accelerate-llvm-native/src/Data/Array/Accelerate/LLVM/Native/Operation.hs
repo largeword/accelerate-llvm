@@ -36,7 +36,7 @@ import Data.Array.Accelerate.Eval
 
 
 import qualified Data.Set as Set
-import Data.Array.Accelerate.AST.Environment (weakenId, weakenEmpty, (.>) )
+import Data.Array.Accelerate.AST.Environment (weakenId, weakenEmpty, (.>), weakenSucc' )
 import Data.Array.Accelerate.Representation.Array (ArrayR(..))
 import Data.Array.Accelerate.Trafo.Var (DeclareVars(..), declareVars)
 import Data.Array.Accelerate.Representation.Ground (buffersR, typeRtoGroundsR)
@@ -58,6 +58,7 @@ import Data.Array.Accelerate.Trafo.Desugar (desugarAlloc)
 
 import qualified Debug.Trace
 import GHC.Stack
+import Data.Array.Accelerate.AST.Idx (Idx(..))
 
 data NativeOp op where
   NMap         :: NativeOp (Fun' (s -> t)    -> In sh s -> Out sh  t -> ())
@@ -347,7 +348,10 @@ fold1bp (BCAN2 (Just (BP shr1 shr2 g)) i) = flip BCAN2 i $ Just $ BP shr1 shr2 $
 
 fold2bp :: BackendClusterArg2 NativeOp env (Out sh e) -> BackendClusterArg2 NativeOp env (In (sh,Int) e)
 fold2bp (BCAN2 Nothing i) = BCAN2 Nothing (i+1)
-fold2bp (BCAN2 (Just (BP shr1 shr2 g)) i) = flip BCAN2 (i+1) $ Just $ BP (ShapeRsnoc shr1) (ShapeRsnoc shr2) $ error "todo: ignore the innermost index, apply the function, then add the index again" g
+fold2bp (BCAN2 (Just (BP shr1 shr2 g)) i) = flip BCAN2 (i+1) $ Just $ BP (ShapeRsnoc shr1) (ShapeRsnoc shr2) $ case g of
+  Lam lhs (Body e) -> Lam (LeftHandSidePair lhs $ LeftHandSideSingle scalarTypeInt) $ 
+                        Body $ Pair (weakenE (weakenSucc' weakenId) e) (Evar $ Var scalarTypeInt ZeroIdx)
+  _ -> error "function type in body or non-body below lam in sh1 -> sh2"
 
 
 instance Eq (BackendClusterArg2 NativeOp env arg) where

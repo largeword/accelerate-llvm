@@ -38,7 +38,7 @@ main = do
     -- futharkbadaccelerategood
   -- Prelude.print $ runN @Native $ fold1 (+) (use $ fromList (Z:.16:.16) [1 :: Int ..])
   
-  let f = runN @Native $ fold1 (*)
+  let f = runN @Native $ reverse . fold1 (*)
   Prelude.print     $ fromList (Z:.3:.1) [1 :: Int ..]
   Prelude.print $ f $ fromList (Z:.3:.1) [1 :: Int ..]
   Prelude.print     $ fromList (Z:.3:.2) [1 :: Int ..]

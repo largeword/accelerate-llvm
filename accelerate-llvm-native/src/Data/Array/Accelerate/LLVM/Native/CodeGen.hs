@@ -174,23 +174,11 @@ flipShape shr sh = go shr sh OP_Unit
     go ShapeRz OP_Unit sh = unsafeCoerce sh
     go (ShapeRsnoc shr) (OP_Pair sh i) sh' = go shr sh (OP_Pair sh' i)
 
--- inspect the cluster and decide what the loopy structure around this loopbody should be,
--- i.e. the number of dimension (nested loops) and bounds. Might need to give this access to
--- the static cluster info later, but hopefully just the 'BackendCluster' is enough.
--- For now, this simply finds an Input or Output and uses its shape. When we add backpermute, need to rethink this function.
--- This function also fails for the specific case of a vertically fused generate into permute: That cluster has no inputs nor outputs,
--- but the vertically fused away array does need to be fully computed. This gets solved automatically when we add backpermutes and pick any in-order argument
-
--- plan: look at all arguments that are in left2right or right2left order. Each gives a shape and shapeR.
--- These should join smoothly: The outermost sizes should match, and then just recurse. If one iteration
--- size is smaller than the other, just take the bigger one: that simply means that the smaller one is before or after the nested loop.
+-- TODO: we need to only consider each _in-order_ vertical argument
+-- TODO: we ignore backpermute currently. Could use this function to check the outputs and vertical, and the staticclusteranalysis evalI for the inputs.
+-- e.g. backpermute . fold: shape of backpermute output plus the extra dimension of fold.
 loopsize :: forall env args r. Cluster NativeOp args -> Gamma env -> Args env args -> (forall sh. (ShapeR sh, Operands sh) -> r) -> r
--- todo: hardcoded iteration space
 loopsize (Cluster _ (Cluster' io _)) gamma = go io
-  -- k (ShapeRsnoc $ ShapeRsnoc ShapeRz, OP_Pair (OP_Pair OP_Unit $ constant typerInt 16) $ constant typerInt 16) 
-  --error "TODO" 
-  -- need to do some fiddling, consider e.g. backpermute.fold where we need to do the output of the backpermute,
-  -- with the inner dimension of the fold on top. Use the 'onOp' for this!
   where
     go :: ClusterIO a i o -> Args env a -> (forall sh. (ShapeR sh, Operands sh) -> r) -> r
     go Empty ArgsNil k = k (ShapeRz, OP_Unit)
@@ -202,16 +190,10 @@ loopsize (Cluster _ (Cluster' io _)) gamma = go io
     go (ExpPut io')                    (_                              :>: args') k = go io' args' k
     go (VarPut io')                    (_                              :>: args') k = go io' args' k
     go (FunPut io')                    (_                              :>: args') k = go io' args' k
-
+    -- get the largest ShapeR, and the corresponding shape
     combine :: (ShapeR sh1, Operands sh1) -> (ShapeR sh2, Operands sh2) -> (forall sh. (ShapeR sh, Operands sh) -> r) -> r
-    combine x y k = combine' x y k k
-    combine' :: (ShapeR sh1, Operands sh1) -> (ShapeR sh2, Operands sh2) -> (forall sh. (ShapeR sh, Operands sh) -> r) -> (forall sh. (ShapeR sh, Operands sh) -> r) -> r
-    combine' (ShapeRz,_) sh2 kl kr = kr sh2
-    combine' sh1 (ShapeRz,_) kl kr = kl sh1
-    combine' (ShapeRsnoc shr1, OP_Pair sh1 n1) (ShapeRsnoc shr2, OP_Pair sh2 n2) kl kr =
-      combine' (shr1, sh1) (shr2, sh2) 
-        (\(shr,sh) -> kl (ShapeRsnoc shr, OP_Pair sh n1))
-        (\(shr,sh) -> kr (ShapeRsnoc shr, OP_Pair sh n2))
+    combine x y k = if rank (fst x) > rank (fst y) then k x else k y
+   
 
 
 type Accumulated = M.Map Label (Exists Operands, Exists TypeR)
@@ -308,7 +290,8 @@ instance EvalOp NativeOp where
     | otherwise = pure $ Push Env.Empty $ FromArg (Value' CN sh)
   evalOp _ _ NScanl1 gamma (Push (Push _ (BAE (Value' x' sh) (BCAN2 (Just (BP{})) d))) (BAE f' _)) = error "backpermuted scan"
   evalOp i l NFold1 gamma args = error "todo: fold1"
-  evalOp (d',_,~(inner:_)) l NFold2 gamma (Push (Push _ (BAE (Value' x' sh@(Shape' (ShapeRsnoc shr') ~(CJ (OP_Pair sh' _)))) (BCAN2 Nothing d))) (BAE f' _))
+  -- we can ignore the index permutation for folds here
+  evalOp (d',_,~(inner:_)) l NFold2 gamma (Push (Push _ (BAE (Value' x' sh@(Shape' (ShapeRsnoc shr') ~(CJ (OP_Pair sh' _)))) (BCAN2 _ d))) (BAE f' _))
     | f <- llvmOfFun2 @Native f' gamma
     , Lam (lhsToTupR -> ty :: TypeR e) _ <- f'
     , CJ x <- x'
@@ -324,7 +307,6 @@ instance EvalOp NativeOp where
         let (Exists (unsafeCoerce @(Operands _) @(Operands e) -> x), _) = acc M.! l
         pure (Push Env.Empty $ FromArg (Value' (CJ x) (Shape' shr' (CJ sh'))), acc)
     | otherwise = pure $ Push Env.Empty $ FromArg (Value' CN (Shape' shr' (CJ sh')))
-  evalOp _ _ NFold2 _ _ = error "backpermuted fold1"
 
 multidim :: ShapeR sh -> [Operands Int] -> Operands sh
 multidim ShapeRz [] = OP_Unit
