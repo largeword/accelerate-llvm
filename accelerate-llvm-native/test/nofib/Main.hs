@@ -36,12 +36,21 @@ main = do
     --             I2 _ n = shape b 
     --         in sum $ backpermute (I3 k m n) (\(I3 p q r) -> I3 p r q) $ zipWith ((*) @(Exp Float)) (replicate (I3 All_ All_ n) a) (replicate (I3 k All_ All_) b)
     -- futharkbadaccelerategood
-  Prelude.print $ {-flip linearIndexArray 0 $ Prelude.fst $ -} runN @Native $ fold1 (+) (use $ fromList (Z:.16:.16) [1 :: Int ..])
+  -- Prelude.print $ runN @Native $ fold1 (+) (use $ fromList (Z:.16:.16) [1 :: Int ..])
   
-  -- let f = Prelude.print . {-flip linearIndexArray 0 $ Prelude.fst $ -} runN @Native . fold1 (*) . use
-  -- f $ fromList (Z:.2:.1) [1 :: Int ..]
-  -- f $ fromList (Z:.2:.2) [1 :: Int ..]
-  -- f $ fromList (Z:.2:.3) [1 :: Int ..]
+  let f = runN @Native $ fold1 (*)
+  Prelude.print     $ fromList (Z:.3:.1) [1 :: Int ..]
+  Prelude.print $ f $ fromList (Z:.3:.1) [1 :: Int ..]
+  Prelude.print     $ fromList (Z:.3:.2) [1 :: Int ..]
+  Prelude.print $ f $ fromList (Z:.3:.2) [1 :: Int ..]
+  Prelude.print     $ fromList (Z:.3:.3) [1 :: Int ..]
+  Prelude.print $ f $ fromList (Z:.3:.3) [1 :: Int ..]
+  Prelude.print     $ fromList (Z:.3:.4) [1 :: Int ..]
+  Prelude.print $ f $ fromList (Z:.3:.4) [1 :: Int ..]
+  Prelude.print     $ fromList (Z:.3:.5) [1 :: Int ..]
+  Prelude.print $ f $ fromList (Z:.3:.5) [1 :: Int ..]
+  Prelude.print     $ fromList (Z:.3:.6) [1 :: Int ..]
+  Prelude.print $ f $ fromList (Z:.3:.6) [1 :: Int ..]
 
   -- print $ flip linearIndexArray 0 . Prelude.fst $ runN @Native $ diagonal' (use $ fromList (Z:.1024) [1 :: Int ..])
 

@@ -13,6 +13,7 @@
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE UndecidableInstances #-}
 
 -- |
 -- Module      : Data.Array.Accelerate.LLVM.Native.CodeGen
@@ -78,8 +79,8 @@ import Data.Array.Accelerate.LLVM.CodeGen.Loop (iter, while)
 import Data.Array.Accelerate.LLVM.Native.CodeGen.Loop
 import qualified Debug.Trace
 
--- TODO: add 'dimsPerIter' to backendargs, add a counter for depth to the Index type, replace imapNestFromTo with a stack of iterFromTo's
---       that each contain two calls to evalCluster (before and after recursive loop) as well as a recursive loop.
+
+
 
 codegen :: UID
         -> Env AccessGroundR env
@@ -96,11 +97,11 @@ codegen uid env c@(Cluster _ (Cluster' cIO cAST)) args =
     where
       (argTp, extractEnv, workstealIndex, workstealActiveThreads, gamma) = bindHeaderEnv env
       body :: Accumulated -> CodeGen Native ()
-      body initialAcc = loopsize c gamma args $ \(shr',sh') ->
+      body initialAcc = loopsize c gamma args $ \(shr', flipShape shr' -> sh') ->
         let go :: ShapeR sh -> Operands sh -> (Int, Operands Int, [Operands Int]) -> StateT Accumulated (CodeGen Native) ()
             go ShapeRz OP_Unit _ = pure ()
             go (ShapeRsnoc shr) (OP_Pair sh sz) ix = iter' sz ix $ \i@(d,lin,is) -> do
-              recurLin <- lift $ mul numType lin sz
+              recurLin <- lift $ mul numType lin (firstOrZero shr sh)
               go shr sh (d+1, recurLin, is)
               let ba = makeBackendArg @NativeOp args gamma c
               newInputs <- evalI @NativeOp i cIO args ba gamma
@@ -125,47 +126,9 @@ codegen uid env c@(Cluster _ (Cluster' cIO cAST)) args =
                               (\(OP_Pair i l) -> OP_Pair <$> add numType (constant typerInt 1) i <*> add numType (constant typerInt 1) l)
                               (\(OP_Pair i l) -> fmap (toR . snd) . runStateT (body (d, l, i:outerI)) . fromR)
 
-
--- codegenNoWorkstealing
---   :: UID
---   -> Env AccessGroundR env
---   -> Cluster NativeOp args
---   -> Args env args
---   -> LLVM Native (Module (KernelType env))
--- codegenNoWorkstealing uid env c@(Cluster _ (Cluster' cIO cAST)) args =
---   codeGenFunction uid "fused_cluster_name" (LLVM.Lam argTp "arg") $ do
---     extractEnv
---     acc <- execStateT (evalCluster (toOnlyAcc c) args gamma ()) mempty
---     body acc
---     retval_ $ boolean True
---     where
---       (argTp, extractEnv, _workstealIndex, _workstealActiveThreads, gamma) = bindHeaderEnv env
---       body initialAcc = loopsize c gamma args $ \(shr',sh') ->
---         let go :: ShapeR sh -> Operands sh -> (Int, Operands Int, [Operands Int]) -> StateT Accumulated (CodeGen Native) ()
---             go ShapeRz OP_Unit _ = pure ()
---             go (ShapeRsnoc shr) (OP_Pair sh sz) ix = iter' sz ix $ \i@(d,lin,is) -> do
---               recurLin <- lift $ mul numType lin sz
---               go shr sh (d+1, recurLin, is)
---               let ba = makeBackendArg @NativeOp args gamma c
---               newInputs <- evalI @NativeOp i cIO args ba gamma
---               outputs <- evalAST @NativeOp i cAST gamma newInputs
---               evalO @NativeOp i cIO args gamma outputs
---         in evalStateT (go shr' sh' (0, constant typerInt 0, [])) initialAcc
---       iter' :: Operands Int
---             -> (Int, Operands Int, [Operands Int])
---             -> ((Int, Operands Int, [Operands Int]) -> StateT Accumulated (CodeGen Native) ()) -> StateT Accumulated (CodeGen Native) ()
---       iter' size (d, linearI, outerI) body = StateT $ \accMap ->
---         operandsMapToPairs accMap $ \(accR, toR, fromR) ->
---           ((),) . fromR <$> iter
---                               (TupRpair typerInt typerInt)
---                               accR
---                               (OP_Pair (constant typerInt 0) linearI)
---                               (toR accMap)
---                               (\(OP_Pair i _) -> lt singleType i size)
---                               (\(OP_Pair i l) -> OP_Pair <$> add numType (constant typerInt 1) i <*> add numType (constant typerInt 1) l)
---                               (\(OP_Pair i l) -> fmap (toR . snd) . runStateT (body (d, l, i:outerI)) . fromR)
-
-
+-- We use some unsafe coerces in the context of the accumulators. 
+-- Some, in this function, are very local. Others, like in evalOp, 
+-- just deal with the assumption that the specific operand stored at index l indeed belongs to operation l.
 operandsMapToPairs
   :: Accumulated
   -> (forall accR. ( TypeR accR
@@ -192,8 +155,24 @@ operandsMapToPairs acc k
   unsafeUnExists :: Exists f -> f a
   unsafeUnExists (Exists fa) = unsafeCoerce fa
 
+-- type family ShapeMinus big small where
+--   ShapeMinus sh () = sh
+--   ShapeMinus (sh, Int) (sh', Int) = ShapeMinus sh sh'
 
+firstOrZero :: ShapeR sh -> Operands sh -> Operands Int
+firstOrZero ShapeRz _ = constant typerInt 0
+firstOrZero ShapeRsnoc{} (OP_Pair _ i) = i
 
+type family ShapePlus a b where
+  ShapePlus sh () = sh
+  ShapePlus sh (sh', Int) = ShapePlus (sh, Int) sh'
+
+flipShape :: forall sh. ShapeR sh -> Operands sh -> Operands sh
+flipShape shr sh = go shr sh OP_Unit
+  where
+    go :: ShapeR sh' -> Operands sh' -> Operands sh'' -> Operands (ShapePlus sh' sh'')
+    go ShapeRz OP_Unit sh = unsafeCoerce sh
+    go (ShapeRsnoc shr) (OP_Pair sh i) sh' = go shr sh (OP_Pair sh' i)
 
 -- inspect the cluster and decide what the loopy structure around this loopbody should be,
 -- i.e. the number of dimension (nested loops) and bounds. Might need to give this access to
@@ -207,18 +186,34 @@ operandsMapToPairs acc k
 -- size is smaller than the other, just take the bigger one: that simply means that the smaller one is before or after the nested loop.
 loopsize :: forall env args r. Cluster NativeOp args -> Gamma env -> Args env args -> (forall sh. (ShapeR sh, Operands sh) -> r) -> r
 -- todo: hardcoded iteration space
-loopsize (Cluster _ (Cluster' io _)) gamma args k = k (ShapeRsnoc $ ShapeRsnoc ShapeRz, OP_Pair (OP_Pair OP_Unit $ constant typerInt 16) $ constant typerInt 16) --error "TODO" -- need to do some fiddling, consider e.g. backpermute.fold where we need to do the output of the backpermute, with the inner dimension of the fold on top. Use the 'onOp' for this!
-  -- where
-  --   go :: ClusterIO a i o -> Args env a -> r
-  --   go Empty                  ArgsNil                              = k (ShapeRz, OP_Unit)
-  --   go (Input _)            (ArgArray _ (ArrayR shr _) sh _ :>: _) = k (shr, aprjParameters (unsafeToExpVars sh) gamma)
-  --   go (Output{}) (ArgArray _ (ArrayR shr _) sh _ :>: _)           = k (shr, aprjParameters (unsafeToExpVars sh) gamma)
-  --   go (Trivial _)          (ArgArray _ (ArrayR shr _) sh _ :>: _) = k (shr, aprjParameters (unsafeToExpVars sh) gamma)
-  --   go (Vertical _ (ArrayR shr _) _) (ArgVar sh :>: _)             = k (shr, aprjParameters                  sh  gamma)
-  --   go (MutPut io')           (_ :>: args') = go io' args'
-  --   go (ExpPut io')           (_ :>: args') = go io' args'
-  --   go (VarPut io')           (_ :>: args') = go io' args'
-  --   go (FunPut io')           (_ :>: args') = go io' args'
+loopsize (Cluster _ (Cluster' io _)) gamma = go io
+  -- k (ShapeRsnoc $ ShapeRsnoc ShapeRz, OP_Pair (OP_Pair OP_Unit $ constant typerInt 16) $ constant typerInt 16) 
+  --error "TODO" 
+  -- need to do some fiddling, consider e.g. backpermute.fold where we need to do the output of the backpermute,
+  -- with the inner dimension of the fold on top. Use the 'onOp' for this!
+  where
+    go :: ClusterIO a i o -> Args env a -> (forall sh. (ShapeR sh, Operands sh) -> r) -> r
+    go Empty ArgsNil k = k (ShapeRz, OP_Unit)
+    go (Input io')                     (ArgArray _ (ArrayR shr _) sh _ :>: args') k = go io' args' $ \x -> combine x (shr, aprjParameters (unsafeToExpVars sh) gamma) k
+    go (Output _ _ _ io')              (ArgArray _ (ArrayR shr _) sh _ :>: args') k = go io' args' $ \x -> combine x (shr, aprjParameters (unsafeToExpVars sh) gamma) k
+    go (Trivial io')                   (ArgArray _ (ArrayR shr _) sh _ :>: args') k = go io' args' $ \x -> combine x (shr, aprjParameters (unsafeToExpVars sh) gamma) k
+    go (Vertical _ (ArrayR shr _) io') (ArgVar sh                      :>: args') k = go io' args' $ \x -> combine x (shr, aprjParameters                  sh  gamma) k
+    go (MutPut io')                    (_                              :>: args') k = go io' args' k
+    go (ExpPut io')                    (_                              :>: args') k = go io' args' k
+    go (VarPut io')                    (_                              :>: args') k = go io' args' k
+    go (FunPut io')                    (_                              :>: args') k = go io' args' k
+
+    combine :: (ShapeR sh1, Operands sh1) -> (ShapeR sh2, Operands sh2) -> (forall sh. (ShapeR sh, Operands sh) -> r) -> r
+    combine x y k = combine' x y k k
+    combine' :: (ShapeR sh1, Operands sh1) -> (ShapeR sh2, Operands sh2) -> (forall sh. (ShapeR sh, Operands sh) -> r) -> (forall sh. (ShapeR sh, Operands sh) -> r) -> r
+    combine' (ShapeRz,_) sh2 kl kr = kr sh2
+    combine' sh1 (ShapeRz,_) kl kr = kl sh1
+    combine' (ShapeRsnoc shr1, OP_Pair sh1 n1) (ShapeRsnoc shr2, OP_Pair sh2 n2) kl kr =
+      combine' (shr1, sh1) (shr2, sh2) 
+        (\(shr,sh) -> kl (ShapeRsnoc shr, OP_Pair sh n1))
+        (\(shr,sh) -> kr (ShapeRsnoc shr, OP_Pair sh n2))
+
+
 type Accumulated = M.Map Label (Exists Operands, Exists TypeR)
 -- type Accumulator = (Accumulated, Block, Block)
 
