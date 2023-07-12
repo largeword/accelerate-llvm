@@ -90,7 +90,7 @@ codegen :: UID
 codegen uid env c@(Cluster _ (Cluster' cIO cAST)) args = 
   codeGenFunction uid "fused_cluster_name" (LLVM.Lam argTp "arg") $ do
     extractEnv
-    workstealLoop workstealIndex workstealActiveThreads (op scalarTypeInt32 $ constant (TupRsingle scalarTypeInt32) 3) $ \_ -> do
+    workstealLoop workstealIndex workstealActiveThreads (op scalarTypeInt32 $ constant (TupRsingle scalarTypeInt32) 1) $ \_ -> do
       acc <- execStateT (evalCluster (toOnlyAcc c) args gamma ()) mempty
       body acc
       retval_ $ boolean True
@@ -163,16 +163,9 @@ firstOrZero :: ShapeR sh -> Operands sh -> Operands Int
 firstOrZero ShapeRz _ = constant typerInt 0
 firstOrZero ShapeRsnoc{} (OP_Pair _ i) = i
 
-type family ShapePlus a b where
-  ShapePlus sh () = sh
-  ShapePlus sh (sh', Int) = ShapePlus (sh, Int) sh'
 
 flipShape :: forall sh. ShapeR sh -> Operands sh -> Operands sh
-flipShape shr sh = go shr sh OP_Unit
-  where
-    go :: ShapeR sh' -> Operands sh' -> Operands sh'' -> Operands (ShapePlus sh' sh'')
-    go ShapeRz OP_Unit sh = unsafeCoerce sh
-    go (ShapeRsnoc shr) (OP_Pair sh i) sh' = go shr sh (OP_Pair sh' i)
+flipShape shr = multidim shr . reverse . multidim' shr
 
 -- TODO: we need to only consider each _in-order_ vertical argument
 -- TODO: we ignore backpermute currently. Could use this function to check the outputs and vertical, and the staticclusteranalysis evalI for the inputs.

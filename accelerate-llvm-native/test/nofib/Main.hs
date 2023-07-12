@@ -10,6 +10,7 @@
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 module Main where
 
@@ -21,49 +22,34 @@ import Data.Array.Accelerate.LLVM.Native
 import Data.Array.Accelerate.LLVM.Native.Operation
 import Criterion.Main
 import Control.Monad
-import Prelude ()
+import Prelude (Show(..), IO, )
 import qualified Prelude as Prelude
+import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solve
 
-main :: Prelude.IO ()
--- main = nofib runN
+main :: IO ()
 main = do
-  -- Currently, SLV is broken and it removes permutes!
-  -- putStrLn $ test @UniformScheduleFun @NativeKernel $ \xs ys -> A.permute @DIM2 @DIM1 @Int (+) xs (const $ Just_ $ I1 0) ys
-  -- Prelude.putStrLn $ test @UniformScheduleFun @NativeKernel $ 
-  
-  -- backpermute @_ @_ @Float (I2 2 10) (\(I2 x y) -> I2 y x) . backpermute (I2 10 10) (\(I2 x y) -> I2 y x)
-    -- \a b -> let I2 k m = shape a 
-    --             I2 _ n = shape b 
-    --         in sum $ backpermute (I3 k m n) (\(I3 p q r) -> I3 p r q) $ zipWith ((*) @(Exp Float)) (replicate (I3 All_ All_ n) a) (replicate (I3 k All_ All_) b)
-    -- futharkbadaccelerategood
-  -- Prelude.print $ runN @Native $ fold1 (+) (use $ fromList (Z:.16:.16) [1 :: Int ..])
-  
-  let f = runN @Native $ reverse . fold1 (*)
-  Prelude.print     $ fromList (Z:.3:.1) [1 :: Int ..]
-  Prelude.print $ f $ fromList (Z:.3:.1) [1 :: Int ..]
-  Prelude.print     $ fromList (Z:.3:.2) [1 :: Int ..]
-  Prelude.print $ f $ fromList (Z:.3:.2) [1 :: Int ..]
-  Prelude.print     $ fromList (Z:.3:.3) [1 :: Int ..]
-  Prelude.print $ f $ fromList (Z:.3:.3) [1 :: Int ..]
-  Prelude.print     $ fromList (Z:.3:.4) [1 :: Int ..]
-  Prelude.print $ f $ fromList (Z:.3:.4) [1 :: Int ..]
-  Prelude.print     $ fromList (Z:.3:.5) [1 :: Int ..]
-  Prelude.print $ f $ fromList (Z:.3:.5) [1 :: Int ..]
-  Prelude.print     $ fromList (Z:.3:.6) [1 :: Int ..]
-  Prelude.print $ f $ fromList (Z:.3:.6) [1 :: Int ..]
-
-  -- print $ flip linearIndexArray 0 . Prelude.fst $ runN @Native $ diagonal' (use $ fromList (Z:.1024) [1 :: Int ..])
-
   -- benchmarking:
-  -- defaultMain 
-  --   [ --benchsize 1
-  --   -- , benchsize 32
-  --   -- , benchsize 64
-  --   --  benchsize (1024*1024*32)      
-  --   ]
-  where 
+  defaultMain $ Prelude.map benchOption [minBound :: Objective .. maxBound]
+  where
+    benchOption obj = bgroup (show obj)
+      [ benchProgram "diagonal " diagonal  obj
+      , benchProgram "diagonal'" diagonal' obj
+      , benchProgram "complex" complex obj
+      , benchProgram "complex'" complex' obj
+      , benchProgram "complexAdd" complexAdd obj
+      , benchProgram "complexAdd'" complexAdd' obj
+      , benchProgram "singleLoop" singleLoop obj
+      , benchProgram "singleLoop'" singleLoop' obj
+      , benchProgram "futharkbadaccelerategood" futharkbadaccelerategood obj
+      , benchProgram "reverses" reverses obj
+      ]
+    benchProgram str pr obj = env (return $ runNWithObj @Native obj pr) $ \p -> bgroup str
+      [ benchsize 32         p
+      , benchsize (32*32)    p
+      , benchsize (32*32*32) p
+      ]
     xs n = fromList (Z:.n) $ Prelude.map (`Prelude.mod` (n `div` 2)) [1 :: Int ..]
-    benchsize n = bgroup (Prelude.show n)
+    benchsize n p = env (return $ xs n) $ \xs -> bench (show n) $ nf p xs
       -- we force the result by indexing into a result array and forcing that number. 
       -- some benchmarks return two arrays, so we simply index in the first one
       -- [ env (return (xs n, flip linearIndexArray 0 . Prelude.fst . runN @Native complex    )) $ (\ ~(xs, p) -> bench "complex    " $ nf p xs) 
@@ -72,9 +58,9 @@ main = do
       -- , env (return (xs n, flip linearIndexArray 0               . runN @Native complexAdd')) $ (\ ~(xs, p) -> bench "complexAdd'" $ nf p xs)         
       -- , env (return (xs n, flip linearIndexArray 0               . runN @Native singleLoop )) $ (\ ~(xs, p) -> bench "singleLoop " $ nf p xs)         
       -- , env (return (xs n, flip linearIndexArray 0               . runN @Native singleLoop')) $ (\ ~(xs, p) -> bench "singleLoop'" $ nf p xs) 
-      [ env (return (xs n, flip linearIndexArray 0 . Prelude.fst . runN @Native diagonal   )) $ (\ ~(xs, p) -> bench "diagonal   " $ nf p xs) 
-      , env (return (xs n, flip linearIndexArray 0 . Prelude.fst . runN @Native diagonal'  )) $ (\ ~(xs, p) -> bench "diagonal'  " $ nf p xs) 
-      ]
+      -- [ bench "diagonal   " $ nf (flip linearIndexArray 0 . Prelude.fst . p) xs) 
+      -- , bench "diagonal'  " $ nf (flip linearIndexArray 0 . Prelude.fst . p) xs) 
+      -- ]
 
 ----------------------------BENCHMARKS------------------------------
 -- complex      from the ILP example
