@@ -1,19 +1,20 @@
 {-# OPTIONS_GHC -fno-warn-orphans #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs             #-}
 {-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
-{-# LANGUAGE ViewPatterns #-}
-{-# LANGUAGE TupleSections #-}
-{-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE StandaloneDeriving #-}
-{-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE UndecidableInstances #-}
+{-# LANGUAGE ViewPatterns #-}
 
 -- |
 -- Module      : Data.Array.Accelerate.LLVM.Native.CodeGen
@@ -63,7 +64,7 @@ import Data.Array.Accelerate.Trafo.Desugar (ArrayDescriptor(..))
 import Data.Array.Accelerate.LLVM.CodeGen.Arithmetic ( when, ifThenElse, just, add, lt, mul, eq, fromJust, isJust )
 import Data.Array.Accelerate.Analysis.Match (matchShapeR)
 import Data.Array.Accelerate.Trafo.Exp.Substitution (compose)
-import Data.Array.Accelerate.AST.Operation (groundToExpVar)
+import Data.Array.Accelerate.AST.Operation (groundToExpVar, Fun)
 import Data.Array.Accelerate.LLVM.Native.CodeGen.Permute (atomically)
 import Control.Monad.State (StateT(..), lift, evalStateT, execStateT)
 import qualified Data.Map as M
@@ -78,6 +79,7 @@ import Data.Bifunctor (Bifunctor(..))
 import Data.Array.Accelerate.LLVM.CodeGen.Loop (iter, while)
 import Data.Array.Accelerate.LLVM.Native.CodeGen.Loop
 import qualified Debug.Trace
+import Formatting.ShortFormatters (o)
 
 
 
@@ -91,27 +93,29 @@ codegen uid env c@(Cluster _ (Cluster' cIO cAST)) args =
   codeGenFunction uid "fused_cluster_name" (LLVM.Lam argTp "arg") $ do
     extractEnv
     workstealLoop workstealIndex workstealActiveThreads (op scalarTypeInt32 $ constant (TupRsingle scalarTypeInt32) 1) $ \_ -> do
-      acc <- execStateT (evalCluster (toOnlyAcc c) args gamma ()) mempty
-      body acc
+      (acc, loopsize') <- execStateT (evalCluster (toOnlyAcc c) args gamma ()) (mempty, LS ShapeRz OP_Unit)
+      body acc loopsize'
       retval_ $ boolean True
     where
       (argTp, extractEnv, workstealIndex, workstealActiveThreads, gamma) = bindHeaderEnv env
-      body :: Accumulated -> CodeGen Native ()
-      body initialAcc = loopsize c gamma args $ \(shr', flipShape shr' -> sh') ->
-        let go :: ShapeR sh -> Operands sh -> (Int, Operands Int, [Operands Int]) -> StateT Accumulated (CodeGen Native) ()
-            go ShapeRz OP_Unit _ = pure ()
-            go (ShapeRsnoc shr) (OP_Pair sh sz) ix = iter' sz ix $ \i@(d,lin,is) -> do
-              recurLin <- lift $ mul numType lin (firstOrZero shr sh)
-              go shr sh (d+1, recurLin, is)
-              let ba = makeBackendArg @NativeOp args gamma c
-              newInputs <- evalI @NativeOp i cIO args ba gamma
-              outputs <- evalAST @NativeOp i cAST gamma newInputs
-              evalO @NativeOp i cIO args gamma outputs
-        in case (shr', sh') of
-          -- (ShapeRz,_) -> error "tiny cluster"
-          -- (ShapeRsnoc shr', OP_Pair sh' sz) -> 
-          (shr', sh') ->
-            evalStateT (go shr' sh' (1, constant typerInt 0, [])) initialAcc
+      body :: Accumulated -> Loopsizes -> CodeGen Native ()
+      body initialAcc partialLoopSize =
+        case combine (loopsizeOutVertical c gamma args) partialLoopSize of
+          LS shr' sh' ->
+            let go :: ShapeR sh -> Operands sh -> (Int, Operands Int, [Operands Int]) -> StateT Accumulated (CodeGen Native) ()
+                go ShapeRz OP_Unit _ = pure ()
+                go (ShapeRsnoc shr) (OP_Pair sh sz) ix = iter' sz ix $ \i@(d,lin,is) -> do
+                  recurLin <- lift $ mul numType lin (firstOrZero shr sh)
+                  go shr sh (d+1, recurLin, is)
+                  let ba = makeBackendArg @NativeOp args gamma c
+                  newInputs <- evalI @NativeOp i cIO args ba gamma
+                  outputs <- evalAST @NativeOp i cAST gamma newInputs
+                  evalO @NativeOp i cIO args gamma outputs
+            in case (shr', flipShape shr' sh') of
+              -- (ShapeRz,_) -> error "tiny cluster"
+              -- (ShapeRsnoc shr', OP_Pair sh' sz) -> 
+              (shr', sh') ->
+                evalStateT (go shr' sh' (1, constant typerInt 0, [])) initialAcc
       iter' :: Operands Int
             -> (Int, Operands Int, [Operands Int])
             -> ((Int, Operands Int, [Operands Int]) -> StateT Accumulated (CodeGen Native) ()) -> StateT Accumulated (CodeGen Native) ()
@@ -170,22 +174,22 @@ flipShape shr = multidim shr . reverse . multidim' shr
 -- TODO: we need to only consider each _in-order_ vertical argument
 -- TODO: we ignore backpermute currently. Could use this function to check the outputs and vertical, and the staticclusteranalysis evalI for the inputs.
 -- e.g. backpermute . fold: shape of backpermute output plus the extra dimension of fold.
-loopsize :: forall env args r. Cluster NativeOp args -> Gamma env -> Args env args -> (forall sh. (ShapeR sh, Operands sh) -> r) -> r
-loopsize (Cluster _ (Cluster' io _)) gamma = go io
+loopsizeOutVertical :: forall args env. Cluster NativeOp args -> Gamma env -> Args env args -> Loopsizes
+loopsizeOutVertical (Cluster _ (Cluster' io _)) gamma args = go io args
   where
-    go :: ClusterIO a i o -> Args env a -> (forall sh. (ShapeR sh, Operands sh) -> r) -> r
-    go Empty ArgsNil k = k (ShapeRz, OP_Unit)
-    go (Input io')                     (ArgArray _ (ArrayR shr _) sh _ :>: args') k = go io' args' $ \x -> combine x (shr, aprjParameters (unsafeToExpVars sh) gamma) k
-    go (Output _ _ _ io')              (ArgArray _ (ArrayR shr _) sh _ :>: args') k = go io' args' $ \x -> combine x (shr, aprjParameters (unsafeToExpVars sh) gamma) k
-    go (Trivial io')                   (ArgArray _ (ArrayR shr _) sh _ :>: args') k = go io' args' $ \x -> combine x (shr, aprjParameters (unsafeToExpVars sh) gamma) k
-    go (Vertical _ (ArrayR shr _) io') (ArgVar sh                      :>: args') k = go io' args' $ \x -> combine x (shr, aprjParameters                  sh  gamma) k
-    go (MutPut io')                    (_                              :>: args') k = go io' args' k
-    go (ExpPut io')                    (_                              :>: args') k = go io' args' k
-    go (VarPut io')                    (_                              :>: args') k = go io' args' k
-    go (FunPut io')                    (_                              :>: args') k = go io' args' k
-    -- get the largest ShapeR, and the corresponding shape
-    combine :: (ShapeR sh1, Operands sh1) -> (ShapeR sh2, Operands sh2) -> (forall sh. (ShapeR sh, Operands sh) -> r) -> r
-    combine x y k = if rank (fst x) > rank (fst y) then k x else k y
+    go :: ClusterIO a i o -> Args env a -> Loopsizes
+    go Empty ArgsNil = LS ShapeRz OP_Unit
+    go (Input io')                     (ArgArray _ (ArrayR shr _) sh _ :>: args') = go io' args' -- $ \x -> combine x (shr, aprjParameters (unsafeToExpVars sh) gamma) k
+    go (Output _ _ _ io')              (ArgArray _ (ArrayR shr _) sh _ :>: args') = combine (go io' args') $ LS shr (aprjParameters (unsafeToExpVars sh) gamma)
+    go (Trivial io')                   (ArgArray _ (ArrayR shr _) sh _ :>: args') = combine (go io' args') $ LS shr (aprjParameters (unsafeToExpVars sh) gamma)
+    go (Vertical _ (ArrayR shr _) io') (ArgVar sh                      :>: args') = combine (go io' args') $ LS shr (aprjParameters                  sh  gamma)
+    go (MutPut io')                    (_                              :>: args') = go io' args'
+    go (ExpPut io')                    (_                              :>: args') = go io' args'
+    go (VarPut io')                    (_                              :>: args') = go io' args'
+    go (FunPut io')                    (_                              :>: args') = go io' args'
+-- get the largest ShapeR, and the corresponding shape
+combine :: Loopsizes -> Loopsizes -> Loopsizes
+combine x@(LS a _) y@(LS b _) = if rank a > rank b then x else y
    
 
 
@@ -213,17 +217,20 @@ instance EvalOp NativeOp where
     CN -> pure ()
     CJ x -> lift $ Prelude.when (sh `isAtDepth` d) $ writeBuffer tp TypeInt (aprjBuffer (unsafeCoerce buf) gamma) (op TypeInt i) (op tp x)
   readInput :: forall e env sh. ScalarType e -> GroundVars env sh -> GroundVars env (Buffers e) -> Gamma env -> BackendClusterArg2 NativeOp env (In sh e) -> (Int, Operands Int, [Operands Int]) -> StateT Accumulated (CodeGen Native) (Compose Maybe Operands e)
-  readInput _ sh _ gamma _ (d,_,_) | not $ sh `isAtDepth` d = pure CN
-  readInput _ _ _ _ (BCAN2 _ d) (d',_,_) | d /= d = pure CN
-  readInput tp sh ~(TupRsingle buf) gamma (BCAN2 Nothing _)                                 (d,i, _) =
-    lift $ CJ . ir tp <$> readBuffer tp TypeInt (aprjBuffer (unsafeCoerce buf) gamma) (op TypeInt i)
-  readInput tp sh ~(TupRsingle buf) gamma (BCAN2 (Just (BP shr1 (shr2 :: ShapeR sh2) f)) _) (d,_,ix) =
-    lift $ CJ . ir tp <$> do
+  readInput _ _ _ _ _ (d,_,is) | d /= length is = error "fail"
+  readInput tp sh ~(TupRsingle buf) gamma (BCAN2 Nothing d') (d,i, _)
+    | d /= d' = pure CN
+    | otherwise = lift $ CJ . ir tp <$> readBuffer tp TypeInt (aprjBuffer (unsafeCoerce buf) gamma) (op TypeInt i)
+  readInput tp sh ~(TupRsingle buf) gamma (BCAN2 (Just (BP shr1 (shr2 :: ShapeR sh2) f ls)) _) (d,_,ix)
+    | Just Refl <- varsContainsThisShape sh shr2
+    , shr1 `isAtDepth'` d
+    = lift $ CJ . ir tp <$> do
       sh2 <- app1 (llvmOfFun1 @Native f gamma) $ multidim shr1 ix
-      let sh' = unsafeCoerce @(GroundVars env sh) @(GroundVars env sh2) sh -- "trust me", the shapeR in the BP should match the shape of the buffer
-      let sh'' = aprjParameters (groundToExpVar (shapeType shr2) sh') gamma
-      i <- intOfIndex shr2 sh'' sh2
+      -- let sh' = unsafeCoerce @(GroundVars env sh) @(GroundVars env sh2) sh -- "trust me", the shapeR in the BP should match the shape of the buffer
+      let sh' = aprjParameters (groundToExpVar (shapeType shr2) sh) gamma
+      i <- intOfIndex shr2 sh' sh2
       readBuffer tp TypeInt (aprjBuffer (unsafeCoerce buf) gamma) (op TypeInt i)
+    | otherwise = pure CN
 
   evalOp  :: (Int, Operands Int, [Operands Int])
           -> Label
@@ -239,13 +246,12 @@ instance EvalOp NativeOp where
   evalOp _ _ NBackpermute _ (Push (Push (Push Env.Empty (BAE (Shape' shr sh) _)) (BAE (Value' x _) _)) _)
     = lift $ pure $ Push Env.Empty $ FromArg $ Value' x $ Shape' shr sh
   evalOp (d',_,is) _ NGenerate gamma (Push (Push Env.Empty (BAE (Shape' shr ~(CJ sh)) _)) (BAE f (BCAN2 Nothing d)))
-    | shr `isAtDepth'` d = lift $ Push Env.Empty . FromArg . flip Value' (Shape' shr (CJ sh)) . CJ <$> app1 (llvmOfFun1 @Native f gamma) (multidim shr is)
+    | shr `isAtDepth'` d' = lift $ Push Env.Empty . FromArg . flip Value' (Shape' shr (CJ sh)) . CJ <$> app1 (llvmOfFun1 @Native f gamma) (multidim shr is)
     | d' == d = error "how come we didn't hit the case above?"
     | otherwise        = pure $ Push Env.Empty $ FromArg $ Value' CN (Shape' shr (CJ sh))
-  evalOp (d',_,is) _ NGenerate gamma (Push (Push Env.Empty (BAE (Shape' shr sh) _)) (BAE f (BCAN2 (Just (BP shrO shrI idxTransform)) d)))
-    | not $ shr `isAtDepth'` d
+  evalOp (d',_,is) _ NGenerate gamma (Push (Push Env.Empty (BAE (Shape' shr sh) _)) (BAE f (BCAN2 (Just (BP shrO shrI idxTransform ls)) d)))
+    | not $ shrO `isAtDepth'` d'
     = pure $ Push Env.Empty $ FromArg $ flip Value' (Shape' shr sh) CN
-    | d' /= d = error "huh"
     | Just Refl <- matchShapeR shrI shr
     = lift $ Push Env.Empty . FromArg . flip Value' (Shape' shr sh) . CJ <$> app1 (llvmOfFun1 @Native (compose f idxTransform) gamma) (multidim shrO is)
     | otherwise = error "bp shapeR doesn't match generate's output"
@@ -257,7 +263,9 @@ instance EvalOp NativeOp where
     (BAE (ArrayDescriptor shrt sht buft, tty)   _)) -- target
     (BAE (flip (llvmOfFun2 @Native) gamma -> c) _)) -- combination function
     | CJ x <- x'
-    = lift $ do
+    , shrx `isAtDepth'` d'
+    = Debug.Trace.trace "generating code for permute" $
+      lift $ do
         ix' <- app1 f (multidim shrx is)
         -- project element onto the destination array and (atomically) update
         when (isJust ix') $ do
@@ -345,22 +353,42 @@ maybeTy ty = TupRpair (TupRsingle scalarTypeWord8) (TupRpair TupRunit ty)
 
 
 
--- initialiseAccumulator :: Cluster NativeOp args -> CodeGen Native Accumulator
--- initialiseAccumulator (Cluster _ (Cluster' _ P.None)) = mempty
--- initialiseAccumulator (Cluster _ (Cluster' _ (Bind lhs op l ast))) = do
---   acc <- initialiseAccumulator ast
---   case op of
---     NMap         -> return acc
---     NBackpermute -> return acc
---     NGenerate    -> return acc
---     NPermute     -> return acc
---     NFold1 -> undefined
---     NFold2 -> undefined
---     NScanl1 ->
+-- TODO: rename to 'static info' or 'symbolic execution' or so
 newtype JustAccumulator a b = JA (a b)
 
+data Loopsizes where
+  LS :: ShapeR sh -> Operands sh -> Loopsizes
+
+merge :: Loopsizes -> GroundVars env sh -> Gamma env -> Loopsizes
+merge ls v gamma = combine ls $ LS (varsToShapeR v) (aprjParameters (unsafeToExpVars v) gamma)
+
+-- mkls :: Int -> ShapeR sh -> Operands sh -> Bool -> Loopsizes
+-- mkls d shr sh b
+--   | d == rank shr = LS shr sh b
+--   | d > rank shr = mkls d (ShapeRsnoc shr) (multidim (ShapeRsnoc shr) $ foldr (:) [constant typerInt 1] $ multidim' shr sh) b
+--   | d < rank shr = case shr of 
+--       ShapeRsnoc shr' -> mkls d shr' (multidim shr' $ init $ multidim' shr sh) b
+--       _ -> error ""
+--   | otherwise = error ""
+
+-- merge' :: Loopsizes -> Loopsizes -> Loopsizes
+-- merge' ls1@(LS shr1 sh1) ls2@(LS shr2 sh2)
+--   | rank shr1 >= rank shr2 && (b1 || not b2) = ls1
+--   | rank shr1 <= rank shr2 && (b2 || not b1) = ls2
+--   | otherwise = let (big, small) = if rank shr1 > rank shr2 then (ls1,ls2) else (ls2,ls1)
+--                 in case (big,small) of
+--                   (LS shrB (flipShape shrB -> shB), LS shrS (flipShape shrS -> shS)) 
+--                     -> Debug.Trace.traceShow (rank shrB, rank shrS) $ 
+--                       LS shrB (multidim shrB $ Prelude.take (rank shrB - rank shrS) (multidim' shrB shB) ++ multidim' shrS shS) 
+--                           -- (flipShape shrB . multidim shrB $ multidim' shrS shS ++ drop (rank shrS) (multidim' shrB shB)) 
+--                           -- False
+--                   _ -> error "huh"
+--     where flipShape x y = y
+    
+    -- error "todo: take the known indices from the smaller True one, and the rest from the larger False one, call the result False"
+
 instance EvalOp (JustAccumulator NativeOp) where
-  type EvalMonad (JustAccumulator NativeOp) = StateT Accumulated (CodeGen Native) -- should be a ReaderT
+  type EvalMonad (JustAccumulator NativeOp) = StateT (Accumulated, Loopsizes) (CodeGen Native)
   type Index (JustAccumulator NativeOp) = ()
   type Embed' (JustAccumulator NativeOp) = TypeR
   type EnvF (JustAccumulator NativeOp) = GroundOperand
@@ -373,28 +401,34 @@ instance EvalOp (JustAccumulator NativeOp) where
   subtup (SubTupRpair a b) (TupRpair x y) = TupRpair (subtup @(JustAccumulator NativeOp) a x) (subtup @(JustAccumulator NativeOp) b y)
   subtup _ _ = error "subtup-pair with non-pair TypeR"
 
-  readInput ty _ _ _ _ _ = pure $ TupRsingle ty
+  readInput ty sh _ gamma (BCA2JA (BCAN2 Nothing  d)) _ = StateT $ \(acc,ls) -> pure (TupRsingle ty, (acc, merge ls sh gamma))
+  readInput ty sh _ gamma (BCA2JA (BCAN2 (Just (BP _ _ _ ls')) d)) _ = StateT $ \(acc,ls) -> pure (TupRsingle ty, (acc, merge ls ls' gamma))
+
   writeOutput _ _ _ _ _ _ = pure ()
 
   evalOp () l (JA NScanl1) _ (Push (Push _ (BAE (Value' ty sh) _)) (BAE f _))
-    = StateT $ \acc -> do
+    = StateT $ \(acc,ls) -> do
         let thing = zeroes ty
-        pure (Push Env.Empty $ FromArg (Value' undefined sh), M.insert l (Exists thing, Exists ty) acc)
-  evalOp () l (JA NFold2) _ (Push (Push _ (BAE (Value' ty sh) _)) (BAE f _))
-    = StateT $ \acc -> do
+        pure (Push Env.Empty $ FromArg (Value' ty sh), (M.insert l (Exists thing, Exists ty) acc, ls))
+  evalOp () _ (JA NFold1) _ _ = undefined
+  evalOp () l (JA NFold2) _ (Push (Push _ (BAE (Value' ty (Shape' (ShapeRsnoc shr) sh)) _)) (BAE _ _))
+    = StateT $ \(acc,ls) -> do
         let thing = zeroes ty
-        pure (Push Env.Empty $ FromArg (Value' undefined undefined), M.insert l (Exists thing, Exists ty) acc)
-  evalOp () _ (JA NMap) _ (Push (Push (Push Env.Empty (BAE _ _)) (BAE (Value' x (Shape' shr sh)) _)) (BAE _ _))
-    = lift $ pure $ Push Env.Empty $ FromArg $ Value' undefined (Shape' shr sh)
+        pure (Push Env.Empty $ FromArg (Value' ty (Shape' shr (case sh of TupRpair x _ -> x))), (M.insert l (Exists thing, Exists ty) acc, ls))
+  evalOp () _ (JA NMap) _ (Push (Push (Push Env.Empty (BAE _ _)) (BAE (Value' _ (Shape' shr sh)) _)) (BAE f _))
+    = lift $ pure $ Push Env.Empty $ FromArg $ Value' (getOutputType f) (Shape' shr sh)
   evalOp () _ (JA NBackpermute) _ (Push (Push (Push Env.Empty (BAE (Shape' shr sh) _)) (BAE (Value' x _) _)) _)
     = lift $ pure $ Push Env.Empty $ FromArg $ Value' x $ Shape' shr sh
-  evalOp () _ (JA NGenerate) _ (Push (Push Env.Empty (BAE (Shape' shr sh) _)) (BAE _ _))
-    = lift $ pure $ Push Env.Empty $ FromArg $ Value' undefined (Shape' shr sh)
-  -- For Permute, we ignore all the BP info here and simply assume that there is none
+  evalOp () _ (JA NGenerate) _ (Push (Push Env.Empty (BAE (Shape' shr sh) _)) (BAE f _))
+    = lift $ pure $ Push Env.Empty $ FromArg $ Value' (getOutputType f) (Shape' shr sh)
+  evalOp _ _ (JA NPermute) _ _
+    = lift $ pure Env.Empty
 
+ 
 
-  evalOp _ _ (JA op) _ _ = undefined
-
+getOutputType :: Fun env (i -> o) -> TypeR o
+getOutputType (Lam _ (Body e)) = expType e
+getOutputType _ = error "nope"
 
 instance MakesILP op => MakesILP (JustAccumulator op) where
   type BackendVar (JustAccumulator op) = BackendVar op
@@ -447,6 +481,11 @@ pattern CN :: Compose Maybe f a
 pattern CN = Compose Nothing
 {-# COMPLETE CJ,CN #-}
 
+varsContainsThisShape :: Vars f x sh -> ShapeR sh' -> Maybe (sh :~: sh')
+varsContainsThisShape vs shr
+  | isAtDepth vs (rank shr) = unsafeCoerce $ Just Refl
+  | otherwise = Nothing
+
 -- Does this Vars contain exactly `x` variables, i.e., is `sh` `x`-dimensional?
 isAtDepth :: Vars f x sh -> Int -> Bool
 isAtDepth vs x = x == depth vs
@@ -484,3 +523,9 @@ zeroes ty@(TupRsingle t) = case t of
       TypeFloat  -> constant ty 0
       TypeDouble -> constant ty 0
 
+varsToShapeR :: Vars GroundR x sh -> ShapeR sh
+varsToShapeR TupRunit = ShapeRz
+varsToShapeR (TupRpair sh (TupRsingle x)) = case x of 
+  Var (GroundRscalar (SingleScalarType (NumSingleType (IntegralNumType TypeInt)))) _ -> ShapeRsnoc $ varsToShapeR sh
+  _ -> error "not a shape"
+varsToShapeR _ = error "not a shape"

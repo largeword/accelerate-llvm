@@ -104,10 +104,12 @@ instance DesugarAcc NativeOp where
   mkGenerate    a b     = Exec NGenerate    (a :>: b :>:             ArgsNil)
   mkScan LeftToRight f Nothing i@(ArgArray In (ArrayR shr ty) sh buf) o
     -- If multidimensional, simply NScanl1.
-    | ShapeRsnoc (ShapeRsnoc _) <- shr
+    -- TODO: just always doing nscanl1 now
+    -- | ShapeRsnoc (ShapeRsnoc _) <- shr
     = Exec NScanl1 (f :>: i :>: o :>: ArgsNil)
-    | otherwise -- Otherwise, NScanl1 followed by NScanl1 on the reductions, followed by a replicate on that result and then zipWith the first result.
-    = error "todo"
+    -- | otherwise -- Otherwise, NScanl1 followed by NScanl1 on the reductions, followed by a replicate on that result and then zipWith the first result.
+    -- just using nscanl1 for one dimensional for now
+    -- = error "todo"
   -- right to left is conceptually easy once we already have order variables for backpermute. 
   -- Exclusive scans (changing array size) are weirder, require an extra 'cons' primitive
   mkScan _ _ _ _ _ = error "todo" 
@@ -127,11 +129,11 @@ instance DesugarAcc NativeOp where
             :>: weaken w c 
             :>: weaken w d 
             :>: ArgsNil))
-  -- we desugar a Fold with seed element into a Fold1 followed by a map which prepends the seed
-  -- copied verbatim from Interpreter; this should probably be in the shared implementation except for the part where it doesn't work on 0-size arrays
-  -- Will need to figure out how to solve that before we ship it, as long as we keep the conditional out of the loop. 
-  -- Potentially generating multiple versions, as we do currently? With the new fusion, that might result in an exponential amount of variations in the number of folds per cluster...
-  -- TODO
+  -- -- we desugar a Fold with seed element into a Fold1 followed by a map which prepends the seed
+  -- -- copied verbatim from Interpreter; this should probably be in the shared implementation except for the part where it doesn't work on 0-size arrays
+  -- -- Will need to figure out how to solve that before we ship it, as long as we keep the conditional out of the loop. 
+  -- -- Potentially generating multiple versions, as we do currently? With the new fusion, that might result in an exponential amount of variations in the number of folds per cluster...
+  -- -- TODO
   mkFold a@(ArgFun f) (Just (ArgExp seed)) b@(ArgArray In (ArrayR _ tp) _ _) c@(ArgArray _ arr' sh' _)
     | DeclareVars lhsTemp wTemp kTemp <- declareVars $ buffersR tp =
       aletUnique lhsTemp (desugarAlloc arr' $ fromGrounds sh') $
@@ -145,21 +147,22 @@ instance DesugarAcc NativeOp where
                     weakenE weakenEmpty seed) (expVars vars)) $ weakenThroughReindex wTemp reindexExp f)
                 (ArgArray In arr' (weakenVars wTemp sh') (kTemp weakenId))
                 (weaken wTemp c)
-  mkFold (a :: Arg env (Fun' (e -> e -> e))) Nothing b@(ArgArray In arr@(ArrayR shr tp) _ _) c
-    | DeclareVars lhsSize (wSize :: env :> env') kSize <- declareVars . typeRtoGroundsR $ TupRsingle scalarTypeInt
-    , DeclareVars lhsTemp (wTemp :: env' :> env'') kTemp <- declareVars $ buffersR tp =
-      let w = wTemp .> wSize in
-      case shr of
-        ShapeRsnoc ShapeRz -> aletUnique lhsSize (Compute $ Const scalarTypeInt 2) $ -- magic constant 2; TODO change into `size/workstealsize` rounded up
-          let sh = TupRpair TupRunit (kSize weakenId) in
-          aletUnique lhsTemp (desugarAlloc (ArrayR shr tp) $ fromGrounds sh) $ 
-            let tmpArrArg :: Modifier m -> Arg env'' (m ((),Int) e)
-                tmpArrArg m = ArgArray m arr (weakenVars wTemp sh) (kTemp weakenId)
-            in alet LeftHandSideUnit
-              (Exec NFold1 $ weaken w a :>: weaken w b :>: tmpArrArg Out :>: ArgsNil)
-              (Exec NFold2 $ weaken w a :>: tmpArrArg In :>: weaken w c :>: ArgsNil)
-        _ -> -- single-kernel multidim reduction
-          Exec NFold2 $ a :>: b :>: c :>: ArgsNil
+  -- mkFold (a :: Arg env (Fun' (e -> e -> e))) Nothing b@(ArgArray In arr@(ArrayR shr tp) _ _) c
+  --   | DeclareVars lhsSize (wSize :: env :> env') kSize <- declareVars . typeRtoGroundsR $ TupRsingle scalarTypeInt
+  --   , DeclareVars lhsTemp (wTemp :: env' :> env'') kTemp <- declareVars $ buffersR tp =
+  --     let w = wTemp .> wSize in
+  --     case shr of
+  --       ShapeRsnoc ShapeRz -> aletUnique lhsSize (Compute $ Const scalarTypeInt 2) $ -- magic constant 2; TODO change into `size/workstealsize` rounded up
+  --         let sh = TupRpair TupRunit (kSize weakenId) in
+  --         aletUnique lhsTemp (desugarAlloc (ArrayR shr tp) $ fromGrounds sh) $ 
+  --           let tmpArrArg :: Modifier m -> Arg env'' (m ((),Int) e)
+  --               tmpArrArg m = ArgArray m arr (weakenVars wTemp sh) (kTemp weakenId)
+  --           in alet LeftHandSideUnit
+  --             (Exec NFold1 $ weaken w a :>: weaken w b :>: tmpArrArg Out :>: ArgsNil)
+  --             (Exec NFold2 $ weaken w a :>: tmpArrArg In :>: weaken w c :>: ArgsNil)
+  --       _ -> -- single-kernel multidim reduction
+  --         Exec NFold2 $ a :>: b :>: c :>: ArgsNil
+  mkFold a Nothing b c = Exec NFold2 (a :>: b :>: c :>: ArgsNil)
 
 instance SimplifyOperation NativeOp where
   detectCopy _          NMap         = detectMapCopies
@@ -304,7 +307,7 @@ instance ShrinkArg (BackendClusterArg NativeOp) where
   deadArg (BCAN _) = BCAN 0
 
 data IndexPermutation env where
-  BP :: ShapeR sh1 -> ShapeR sh2 -> Fun env (sh1 -> sh2) -> IndexPermutation env
+  BP :: ShapeR sh1 -> ShapeR sh2 -> Fun env (sh1 -> sh2) -> GroundVars env sh1 -> IndexPermutation env
 type Depth = Int
 instance StaticClusterAnalysis NativeOp where
   data BackendClusterArg2 NativeOp env arg where
@@ -326,38 +329,42 @@ instance StaticClusterAnalysis NativeOp where
   addTup       = bcan2id
   -- onOp propagates the backpermute information from the outputs to the inputs of each operation
   onOp NMap (bp :>: ArgsNil) _ _ = BCAN2 Nothing undefined :>: bcan2id bp :>: bp :>: ArgsNil
-  onOp NBackpermute (BCAN2 (Just bp@(BP shr1 shr2 g)) d :>: ArgsNil) (ArgFun f :>: ArgArray In (ArrayR shrI _) _ _ :>: ArgArray Out (ArrayR shrO _) _ _ :>: ArgsNil) _
-    | Just Refl <- matchShapeR shrO shr2  = BCAN2 Nothing 0 :>: BCAN2 (Just (BP shr1 shrI (compose f g))) d :>: BCAN2 (Just bp) d :>: ArgsNil
+  onOp NBackpermute (BCAN2 (Just bp@(BP shr1 shr2 g sh)) d :>: ArgsNil) (ArgFun f :>: ArgArray In (ArrayR shrI _) _ _ :>: ArgArray Out (ArrayR shrO _) _ _ :>: ArgsNil) _
+    | Just Refl <- matchShapeR shrO shr2  = BCAN2 Nothing 0 :>: BCAN2 (Just (BP shr1 shrI (compose f g) sh)) d :>: BCAN2 (Just bp) d :>: ArgsNil
     | otherwise = error "BP shapeR doesn't match backpermute output shape"
-  onOp NBackpermute (BCAN2 Nothing d           :>: ArgsNil) (ArgFun f :>: ArgArray In (ArrayR shrI _) _ _ :>: ArgArray Out (ArrayR shrO _) _ _ :>: ArgsNil) _
-                                          = BCAN2 Nothing d :>: BCAN2 (Just (BP shrO shrI f)) d             :>: BCAN2 Nothing d           :>: ArgsNil    
+  onOp NBackpermute (BCAN2 Nothing d           :>: ArgsNil) (ArgFun f :>: ArgArray In (ArrayR shrI _) _ _ :>: ArgArray Out (ArrayR shrO _) sh _ :>: ArgsNil) _
+                                          = BCAN2 Nothing d :>: BCAN2 (Just (BP shrO shrI f sh)) d             :>: BCAN2 Nothing d           :>: ArgsNil    
   onOp NGenerate (bp :>: ArgsNil) _ _ = bcan2id bp :>: bp :>: ArgsNil -- storing the bp in the function argument. Probably not required, could just take it from the array one during codegen
   onOp NPermute ArgsNil (_:>:_:>:_:>:_:>:ArgArray In (ArrayR shR _) _ _ :>:ArgsNil) _ = 
     BCAN2 Nothing 0 :>: BCAN2 Nothing 0 :>: BCAN2 Nothing 0 :>: BCAN2 Nothing 0 :>: BCAN2 Nothing (rank shR) :>: ArgsNil
+  onOp NFold2  (bp :>: ArgsNil) (_ :>: ArgArray In _ fs _ :>: _ :>: ArgsNil) _ = BCAN2 Nothing 0 :>: fold2bp bp (case fs of TupRpair _ x -> x) :>: bp :>: ArgsNil
   onOp NFold1  (bp :>: ArgsNil) _ _ = BCAN2 Nothing 0 :>: fold1bp bp :>: bp :>: ArgsNil
-  onOp NFold2  (bp :>: ArgsNil) _ _ = BCAN2 Nothing 0 :>: fold2bp bp :>: bp :>: ArgsNil
   onOp NScanl1 (bp :>: ArgsNil) _ _ = BCAN2 Nothing 0 :>: bcan2id bp :>: bp :>: ArgsNil
 
 bcan2id :: BackendClusterArg2 NativeOp env arg -> BackendClusterArg2 NativeOp env arg'
 bcan2id (BCAN2 Nothing i) = BCAN2 Nothing i
-bcan2id (BCAN2 (Just (BP a b c)) i) = BCAN2 (Just (BP a b c)) i
+bcan2id (BCAN2 (Just (BP a b c d)) i) = BCAN2 (Just (BP a b c d)) i
 
 fold1bp :: BackendClusterArg2 NativeOp env (Out sh e) -> BackendClusterArg2 NativeOp env (In sh e)
 fold1bp (BCAN2 Nothing i) = BCAN2 Nothing i
-fold1bp (BCAN2 (Just (BP shr1 shr2 g)) i) = flip BCAN2 i $ Just $ BP shr1 shr2 $ error "todo: multiply the innermost (outer constructor) dimension by the workstealsize" g
+fold1bp (BCAN2 (Just (BP shr1 shr2 g sh)) i) = flip BCAN2 i $ Just $ BP shr1 shr2 (error "todo: multiply the innermost (outer constructor) dimension by the workstealsize" g) undefined
 
-fold2bp :: BackendClusterArg2 NativeOp env (Out sh e) -> BackendClusterArg2 NativeOp env (In (sh,Int) e)
-fold2bp (BCAN2 Nothing i) = BCAN2 Nothing (i+1)
-fold2bp (BCAN2 (Just (BP shr1 shr2 g)) i) = flip BCAN2 (i+1) $ Just $ BP (ShapeRsnoc shr1) (ShapeRsnoc shr2) $ case g of
-  Lam lhs (Body e) -> Lam (LeftHandSidePair lhs $ LeftHandSideSingle scalarTypeInt) $ 
-                        Body $ Pair (weakenE (weakenSucc' weakenId) e) (Evar $ Var scalarTypeInt ZeroIdx)
-  _ -> error "function type in body or non-body below lam in sh1 -> sh2"
-
+fold2bp :: BackendClusterArg2 NativeOp env (Out sh e) -> GroundVars env Int -> BackendClusterArg2 NativeOp env (In (sh,Int) e)
+fold2bp (BCAN2 Nothing i) _ = BCAN2 Nothing (i+1)
+fold2bp (BCAN2 (Just (BP shr1 shr2 g sh)) i) foldsize = flip BCAN2 (i+1) $ Just $ 
+  BP 
+    (ShapeRsnoc shr1) 
+    (ShapeRsnoc shr2) 
+    (case g of
+      Lam lhs (Body e) -> Lam (LeftHandSidePair lhs $ LeftHandSideSingle scalarTypeInt) $ 
+                            Body $ Pair (weakenE (weakenSucc' weakenId) e) (Evar $ Var scalarTypeInt ZeroIdx)
+      _ -> error "function type in body or non-body below lam in sh1 -> sh2")
+    (TupRpair sh foldsize)
 
 instance Eq (BackendClusterArg2 NativeOp env arg) where
   BCAN2 p i == BCAN2 p' i' = p == p' && i == i'
 instance Eq (IndexPermutation env) where
-  (BP shr1 shr2 f) == (BP shr1' shr2' f')
+  (BP shr1 shr2 f _) == (BP shr1' shr2' f' _)
     | Just Refl <- matchShapeR shr1 shr1'
     , Just Refl <- matchShapeR shr2 shr2'
     = isJust $ matchOpenFun f f'
