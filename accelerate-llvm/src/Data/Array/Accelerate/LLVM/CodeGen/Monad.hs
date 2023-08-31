@@ -80,6 +80,7 @@ import qualified Data.Foldable                                      as F
 import qualified Data.HashMap.Strict                                as HashMap
 import qualified Data.Sequence                                      as Seq
 import qualified Data.ByteString.Short                              as B
+import qualified Debug.Trace
 
 
 -- Code generation
@@ -98,13 +99,17 @@ data CodeGenState = CodeGenState
   , intrinsicTable      :: HashMap ShortByteString Label                  -- standard math intrinsic functions
   , local               :: {-# UNPACK #-} !Word                           -- a name supply
   , global              :: {-# UNPACK #-} !Word                           -- a name supply for global variables
+  , blocksAllocated     :: Int                                            -- number of blocks generated
   }
+  deriving (Show)
 
 data Block = Block
   { blockLabel          :: {-# UNPACK #-} !Label                          -- block label
   , instructions        :: Seq (LLVM.Named LLVM.Instruction)              -- stack of instructions
   , terminator          :: LLVM.Terminator                                -- block terminator
   }
+instance Show Block where
+  show (Block l i _) = "Block " <> show l <> "instructions: {" <> show i <> "}"
 
 newtype CodeGen target a = CodeGen { runCodeGen :: StateT CodeGenState (LLVM target) a }
   deriving (Functor, Applicative, Monad, MonadState CodeGenState)
@@ -137,6 +142,7 @@ codeGenFunction uid name bind body = do
         , intrinsicTable    = intrinsicForTarget @arch
         , local             = 0
         , global            = 0
+        , blocksAllocated   = 0
         }
   
   let
@@ -194,15 +200,17 @@ initBlockChain
 -- instructions might be added to the wrong blocks, or the first set of blocks
 -- will be emitted empty and/or without a terminator.
 --
+-- To fix this, we now use the 'blocksAllocated' counter rather than the size of the chain
+--
 newBlock :: HasCallStack => String -> CodeGen arch Block
 newBlock nm =
   state $ \s ->
-    let idx     = Seq.length (blockChain s)
+    let idx     = blocksAllocated s
         label   = let (h,t) = break (== '.') nm in (h ++ shows idx t)
         next    = Block (fromString label) Seq.empty err
         err     = internalError ("block `" % string % "' has no terminator") label
     in
-    ( next, s )
+    ( next, s { blocksAllocated = 1 + idx } )
 
 
 -- | Add this block to the block stream. Any instructions pushed onto the stream
@@ -241,7 +249,7 @@ createBlocks
           in
           trace (bformat ("generated " % int % " instructions in " % int % " blocks") (n+m) m) ( F.toList blocks , s' )
   where
-    makeBlock Block{..} =
+    makeBlock b@Block{..} = --Debug.Trace.traceShow b $
       LLVM.BasicBlock (downcast blockLabel) (F.toList instructions) (LLVM.Do terminator)
 
 

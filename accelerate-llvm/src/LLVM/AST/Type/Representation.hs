@@ -370,3 +370,8 @@ instance Downcast (PrimType a) LLVM.Type where
       go (TupRsingle s)   = [downcast s]
       go (TupRpair ta tb) = go ta ++ go tb
 
+llvmTypeToAccTypeR :: Type a -> Maybe (TypeR a)
+llvmTypeToAccTypeR VoidType = Just TupRunit
+llvmTypeToAccTypeR (PrimType (ScalarPrimType st)) = Just $ TupRsingle st
+llvmTypeToAccTypeR _ = Nothing
+

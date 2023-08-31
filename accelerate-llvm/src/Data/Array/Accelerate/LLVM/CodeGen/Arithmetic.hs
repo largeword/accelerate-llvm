@@ -757,6 +757,12 @@ lm t n
 isJust :: Operands (PrimMaybe a) -> CodeGen arch (Operands Bool)
 isJust (OP_Pair l _) = instr (IntToBool integralType (op integralType l))
 
-fromJust :: Operands (PrimMaybe a) -> CodeGen arch (Operands a)
-fromJust (OP_Pair _ (OP_Pair OP_Unit r)) = return r
+fromJust :: Operands (PrimMaybe a) -> Operands a
+fromJust (OP_Pair _ (OP_Pair OP_Unit r)) = r
 
+just :: Operands a -> Operands (PrimMaybe a)
+just x = OP_Pair (constant (TupRsingle scalarType) 1) (OP_Pair OP_Unit x)
+
+-- given a reference
+nothing :: Operands a -> Operands (PrimMaybe a)
+nothing x = OP_Pair (constant (TupRsingle scalarType) 0) (OP_Pair OP_Unit x)

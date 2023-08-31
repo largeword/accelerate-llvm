@@ -10,6 +10,9 @@
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE RebindableSyntax #-}
+{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 module Main where
 
 import Data.Array.Accelerate as A
@@ -20,31 +23,42 @@ import Data.Array.Accelerate.LLVM.Native
 import Data.Array.Accelerate.LLVM.Native.Operation
 import Criterion.Main
 import Control.Monad
-import Prelude ()
+import Prelude (Show(..), IO, )
 import qualified Prelude as Prelude
+import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solve
+import Data.Array.Accelerate.Data.Bits
+import Data.Array.Accelerate.Unsafe
 
-main :: Prelude.IO ()
--- main = nofib runN
+main :: IO ()
 main = do
-  -- Currently, SLV is broken and it removes permutes!
-  -- putStrLn $ test @UniformScheduleFun @NativeKernel $ \xs ys -> A.permute @DIM2 @DIM1 @Int (+) xs (const $ Just_ $ I1 0) ys
-  Prelude.putStrLn $ test @UniformScheduleFun @NativeKernel $ -- backpermute @_ @_ @Float (I2 2 10) (\(I2 x y) -> I2 y x) . backpermute (I2 10 10) (\(I2 x y) -> I2 y x)
-    \a b -> let I2 k m = shape a 
-                I2 _ n = shape b 
-            in sum $ backpermute (I3 k m n) (\(I3 p q r) -> I3 p r q) $ zipWith ((*) @(Exp Float)) (replicate (I3 All_ All_ n) a) (replicate (I3 k All_ All_) b)
-  -- print $ flip linearIndexArray 0 . Prelude.fst $ runN @Native $ diagonal (use $ fromList (Z:.1024) [1 :: Int ..])
-  -- print $ flip linearIndexArray 0 . Prelude.fst $ runN @Native $ diagonal' (use $ fromList (Z:.1024) [1 :: Int ..])
-
   -- benchmarking:
-  -- defaultMain 
-  --   [ --benchsize 1
-  --   -- , benchsize 32
-  --   -- , benchsize 64
-  --   --  benchsize (1024*1024*32)      
-  --   ]
-  where 
+  defaultMain $ 
+    Prelude.map (benchOption . Prelude.Left) [minBound :: Objective .. maxBound] 
+    Prelude.++ 
+    Prelude.map (benchOption . Prelude.Right) [NoFusion, GreedyFusion]
+
+  -- Prelude.print $ runNWithObj @Native ArrayReadsWrites $ quicksort $ use $ fromList (Z :. 5) [100::Int, 200, 3, 5, 4]
+  where
+    benchOption :: Prelude.Either Objective Benchmarking -> Benchmark
+    benchOption obj = bgroup (show obj)
+      [ 
+      --   benchProgram "diagonal " diagonal  obj
+      -- , benchProgram "diagonal'" diagonal' obj
+        benchProgram "complex" complex obj
+      -- , benchProgram "complex'" complex' obj
+      , benchProgram "complexAdd" complexAdd obj
+      -- , benchProgram "complexAdd'" complexAdd' obj
+      , benchProgram "singleLoop" singleLoop obj
+      , benchProgram "singleLoop'" singleLoop' obj
+      , benchProgram "futharkbadaccelerategood" futharkbadaccelerategood obj
+      , benchProgram "reverses" reverses obj
+      ]
+    benchProgram str pr (Prelude.Left obj) = env (return $ runNWithObj @Native obj pr) $ \p -> bgroup str
+      [ benchsize (32*32*32) p ]
+    benchProgram str pr (Prelude.Right obj) = env (return $ runNBench @Native obj pr) $ \p -> bgroup str
+      [ benchsize (32*32*32) p ] 
     xs n = fromList (Z:.n) $ Prelude.map (`Prelude.mod` (n `div` 2)) [1 :: Int ..]
-    benchsize n = bgroup (Prelude.show n)
+    benchsize n p = env (return $ xs n) $ \xs -> bench (show n) $ nf p xs
       -- we force the result by indexing into a result array and forcing that number. 
       -- some benchmarks return two arrays, so we simply index in the first one
       -- [ env (return (xs n, flip linearIndexArray 0 . Prelude.fst . runN @Native complex    )) $ (\ ~(xs, p) -> bench "complex    " $ nf p xs) 
@@ -53,9 +67,9 @@ main = do
       -- , env (return (xs n, flip linearIndexArray 0               . runN @Native complexAdd')) $ (\ ~(xs, p) -> bench "complexAdd'" $ nf p xs)         
       -- , env (return (xs n, flip linearIndexArray 0               . runN @Native singleLoop )) $ (\ ~(xs, p) -> bench "singleLoop " $ nf p xs)         
       -- , env (return (xs n, flip linearIndexArray 0               . runN @Native singleLoop')) $ (\ ~(xs, p) -> bench "singleLoop'" $ nf p xs) 
-      [ env (return (xs n, flip linearIndexArray 0 . Prelude.fst . runN @Native diagonal   )) $ (\ ~(xs, p) -> bench "diagonal   " $ nf p xs) 
-      , env (return (xs n, flip linearIndexArray 0 . Prelude.fst . runN @Native diagonal'  )) $ (\ ~(xs, p) -> bench "diagonal'  " $ nf p xs) 
-      ]
+      -- [ bench "diagonal   " $ nf (flip linearIndexArray 0 . Prelude.fst . p) xs) 
+      -- , bench "diagonal'  " $ nf (flip linearIndexArray 0 . Prelude.fst . p) xs) 
+      -- ]
 
 ----------------------------BENCHMARKS------------------------------
 -- complex      from the ILP example
@@ -122,6 +136,8 @@ diagonal xs = let ys = A.map (+2) xs in T2 ys (A.map (+3) ys)
 diagonal' :: Acc (Vector Int) -> Acc (Vector Int, Vector Int)
 diagonal' xs = let ys = A.map (+2) xs in T2 ys (A.map (+3) $ barrier ys)
 
+futharkbadaccelerategood :: Acc (Vector Int) -> Acc (Vector Int, Vector Int)
+futharkbadaccelerategood = complex . map (\x -> x - 1)
 
 
 
@@ -129,6 +145,9 @@ diagonal' xs = let ys = A.map (+2) xs in T2 ys (A.map (+3) $ barrier ys)
 barrier :: Elt a => Acc (Vector a) -> Acc (Vector a)
 barrier xs = generate (shape xs) (xs A.!)
 
+
+vertical :: Acc (Vector Int) -> Acc (Vector Int)
+vertical xs = let ys = A.map (+2) xs in A.map (+3) ys
 
 --------------------------------------------------------
 
@@ -175,3 +194,5 @@ awhileFuse c f x = asnd $ A.awhile c' f' x'
 --   let as = map (+1) xs
 --       bs = map (*2) xs
 --   in permute (+) (\i -> i/2) as bs
+
+
