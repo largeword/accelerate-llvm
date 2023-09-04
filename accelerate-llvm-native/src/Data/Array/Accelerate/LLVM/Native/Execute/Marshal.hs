@@ -7,6 +7,7 @@
 {-# LANGUAGE LambdaCase            #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE ScopedTypeVariables   #-}
+{-# LANGUAGE TemplateHaskell       #-}
 {-# LANGUAGE TypeApplications      #-}
 {-# LANGUAGE TypeFamilies          #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
@@ -38,7 +39,10 @@ import Foreign.Storable
 import qualified Foreign.LibFFI                                 as FFI
 
 marshalInt :: Int -> FFI.Arg
-marshalInt = FFI.argInt
+marshalInt = $( case finiteBitSize (undefined::Int) of
+                    32 -> [| FFI.argInt32 . fromIntegral |]
+                    64 -> [| FFI.argInt64 . fromIntegral |]
+                    _  -> error "I don't know what architecture I am" )
 
 marshalBuffer :: Buffer t -> FFI.Arg
 marshalBuffer (Buffer ua) = FFI.argPtr $ unsafeUniqueArrayPtr ua

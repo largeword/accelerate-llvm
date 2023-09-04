@@ -161,10 +161,10 @@ getElementPtr
     -> Operand (Ptr (ScalarArrayDataR e))
     -> Operand int
     -> CodeGen arch (Operand (Ptr e))
-getElementPtr _ (SingleScalarType tp) _ arr ix
-  | SingleArrayDict <- singleArrayDict tp = instr' $ GetElementPtr arr [ix]
-getElementPtr a (VectorScalarType v) i arr ix
-  | VectorType n _ <- v
+getElementPtr _ t@(SingleScalarType tp)   _ arr ix
+  | SingleArrayDict <- singleArrayDict tp = instr' $ GetElementPtr t arr [ix]
+getElementPtr a t@(VectorScalarType v) i arr ix
+  | VectorType n tp <- v
   , IntegralDict   <- integralDict i
   -- We do not put padding between vector elelemnts. LLVM does do that to
   -- align the elements, which is an issue for Vectors of a size which isn't
@@ -177,13 +177,12 @@ getElementPtr a (VectorScalarType v) i arr ix
           -- padding between our and LLVM's semantics. We cast the pointer to a
           -- pointer of vectors and then perform GetElementPointer on that.
           arr' <- instr' $ PtrCast ptrVecType arr
-          instr' $ GetElementPtr arr' [ix]
+          instr' $ GetElementPtr t arr' [ix]
        else do
           -- 
           ix'  <- instr' $ Mul (IntegralNumType i) ix (integral i (fromIntegral n))
-          p'   <- instr' $ GetElementPtr arr [ix']
-          p    <- instr' $ PtrCast ptrVecType p'
-          return p
+          p'   <- instr' $ GetElementPtr (SingleScalarType tp) arr [integral i 0, ix']
+          instr' $ PtrCast ptrVecType p'
   where
     ptrVecType = PtrPrimType (ScalarPrimType (VectorScalarType v)) a
 
@@ -221,7 +220,7 @@ load addrspace e v p
          let go i w
                | i >= m    = return w
                | otherwise = do
-                   q  <- instr' $ GetElementPtr p' [integral integralType i]
+                   q  <- instr' $ GetElementPtr (SingleScalarType base) p' [integral integralType i]
                    r  <- instr' $ Load (SingleScalarType base) v q
                    w' <- instr' $ InsertElement i w r
                    go (i+1) w'
@@ -254,7 +253,7 @@ store addrspace volatility e p v
                | i >= m    = return ()
                | otherwise = do
                    x <- instr' $ ExtractElement i v
-                   q <- instr' $ GetElementPtr p' [integral integralType i]
+                   q <- instr' $ GetElementPtr (SingleScalarType base) p' [integral integralType i]
                    _ <- instr' $ Store volatility q x
                    go (i+1)
          go 0

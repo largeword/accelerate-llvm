@@ -244,7 +244,7 @@ import Data.Foldable                                                ( asum )
 import Formatting
 import System.CPUTime                                               ( getCPUTime )
 import qualified Data.ByteString.Short                              as S
-import qualified Data.ByteString.Short.Extra                        as S
+import qualified Data.ByteString.Short.Extra                        as SE
 import qualified Data.ByteString.Short.Char8                        as S8
 import qualified Data.Sequence                                      as Seq
 import qualified Data.DList                                         as DL
@@ -485,8 +485,8 @@ foldAllOp tp NativeR{..} gamma aenv arr = do
   result      <- allocateRemote (ArrayR dim0 tp) ()
   let
       minsize = 4096
-      splits  = numWorkers workers
       ranges  = divideWork1 splits minsize ((), 0) sh (,,)
+      splits  = numWorkers workers - 1
       steps   = Seq.length ranges
       sh      = delayedShape arr
   --
@@ -529,7 +529,7 @@ foldDimOp repr NativeR{..} gamma aenv arr@(delayedShape -> (sh, _)) = do
   let
       ArrayR shr tp = repr
       fun     = nativeExecutable !# "fold"
-      splits  = numWorkers workers
+      splits  = numWorkers workers - 1
       minsize = 1
       param   = TupRsingle (ParamRarray repr) `TupRpair` TupRsingle (ParamRmaybe $ ParamRarray $ ArrayR (ShapeRsnoc shr) tp)
   --
@@ -555,7 +555,7 @@ foldSegOp iR repr NativeR{..} gamma aenv input@(delayedShape -> (sh, _)) segment
   future      <- new
   let
       n       = ss-1
-      splits  = numWorkers workers
+      splits  = numWorkers workers - 1
       minsize = 1
       shR     = arrayRshape repr
       segR    = ArrayR dim1 $ TupRsingle $ SingleScalarType $ NumSingleType $ IntegralNumType iR
@@ -622,7 +622,7 @@ scanCore repr NativeR{..} gamma aenv m input@(delayedShape -> (sz, n)) = do
     then
       let
           fun     = nativeExecutable !# "scanS"
-          splits  = numWorkers workers
+          splits  = numWorkers workers - 1
           minsize = 1
       in
       scheduleOpWith splits minsize fun gamma aenv shR sz param (result, manifest input)
@@ -643,9 +643,9 @@ scanCore repr NativeR{..} gamma aenv m input@(delayedShape -> (sz, n)) = do
         -- parallel execution
         else do
           let
-              splits   = numWorkers workers
               minsize  = 8192
               ranges   = divideWork dim1 splits minsize ((), 0) ((), n) (,,)
+              splits   = numWorkers workers - 1
               steps    = Seq.length ranges
               reprTmp  = ArrayR dim1 $ arrayRtype repr
               paramTmp = TupRsingle $ ParamRarray reprTmp
@@ -718,7 +718,7 @@ scan'Core repr NativeR{..} gamma aenv input@(delayedShape -> sh@(sz, n)) = do
     --
     then
       let fun     = nativeExecutable !# "scanS"
-          splits  = numWorkers workers
+          splits  = numWorkers workers - 1
           minsize = 1
           param   = paramA `TupRpair` paramA' `TupRpair` TupRsingle (ParamRmaybe $ ParamRarray repr)
       in
@@ -742,9 +742,9 @@ scan'Core repr NativeR{..} gamma aenv input@(delayedShape -> sh@(sz, n)) = do
         -- parallel execution
         else do
           let
-              splits   = numWorkers workers
               minsize  = 8192
               ranges   = divideWork1 splits minsize ((), 0) ((), n) (,,)
+              splits   = numWorkers workers - 1
               steps    = Seq.length ranges
               reprTmp  = ArrayR dim1 eR
               paramTmp = TupRsingle $ ParamRarray reprTmp
@@ -794,7 +794,7 @@ permuteOp inplace repr shr' NativeR{..} gamma aenv defaults@(shape -> shOut) inp
                    then Debug.trace Debug.dump_exec  "exec: permute/inplace"                  $ return defaults
                    else Debug.timed Debug.dump_exec ("exec: permute/clone " % Debug.elapsedS) $ liftPar (cloneArray repr' defaults)
   let
-      splits  = numWorkers workers
+      splits  = numWorkers workers - 1
       minsize = case shr of
                   ShapeRsnoc ShapeRz              -> 4096
                   ShapeRsnoc (ShapeRsnoc ShapeRz) -> 64
@@ -889,7 +889,7 @@ stencilCore repr NativeR{..} gamma aenv halo sh paramsR params = do
       inside  = nativeExecutable !# "stencil_inside"
       border  = nativeExecutable !# "stencil_border"
 
-      splits  = numWorkers workers
+      splits  = numWorkers workers - 1
       minsize = case shr of
                   ShapeRsnoc ShapeRz              -> 4096
                   ShapeRsnoc (ShapeRsnoc ShapeRz) -> 64
@@ -968,7 +968,7 @@ aforeignOp name _ _ asm arr = do
 
 lookupFunction :: ShortByteString -> Lifetime FunctionTable -> Maybe Function
 lookupFunction name nativeExecutable = do
-  find (\(n,_) -> S.take (S.length n - 65) n == name) (functionTable (unsafeGetValue nativeExecutable))
+  find (\(n,_) -> SE.take (S.length n - 65) n == name) (functionTable (unsafeGetValue nativeExecutable))
 
 andThen :: (Maybe a -> t) -> a -> t
 andThen f g = f (Just g)
@@ -997,7 +997,7 @@ scheduleOp
 scheduleOp fun gamma aenv shr sz paramsR params done = do
   Native{..} <- gets llvmTarget
   let
-      splits  = numWorkers workers
+      splits  = numWorkers workers - 1
       minsize = case shr of
                   ShapeRsnoc ShapeRz              -> 4096
                   ShapeRsnoc (ShapeRsnoc ShapeRz) -> 64
@@ -1172,7 +1172,7 @@ timed name job =
                          let wallTime = wall1 - wall0
                              cpuTime  = fromIntegral (cpu1 - cpu0) * 1E-12
                              name' | verbose   = name
-                                   | otherwise = S.take (S.length name - 65) name
+                                   | otherwise = SE.take (S.length name - 65) name
                          --
                          Debug.traceM Debug.dump_exec ("exec: " % string % " " % Debug.elapsedP) (S8.unpack name') wallTime cpuTime
               --

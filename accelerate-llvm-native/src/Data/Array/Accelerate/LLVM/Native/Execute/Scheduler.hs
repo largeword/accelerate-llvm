@@ -55,8 +55,6 @@ import Data.IORef
 import Data.Int
 import Data.Sequence                                                ( Seq )
 import Formatting
-import Foreign.C.String
-import Text.Printf
 import qualified Data.Sequence                                      as Seq
 import Foreign.Ptr
 import Foreign.ForeignPtr
@@ -180,8 +178,8 @@ hireWorkersOn caps = do
   forM_ caps $ \cpu -> do
     tid <- forkOn cpu $ do
             tid <- myThreadId
-            Debug.init_thread
-            withCString (printf "Thread %d" cpu) Debug.set_thread_name
+            -- Debug.init_thread
+            -- withCString (printf "Thread %d" cpu) Debug.set_thread_name
             runWorker workers cpu
             {- catch
               (restore $ runWorker worker)
@@ -472,8 +470,6 @@ hireWorkersOn caps = do
   workerThreadIds <- forM caps $ \cpu -> do
                        tid <- mask_ $ forkOnWithUnmask cpu $ \restore -> do
                                 tid <- myThreadId
-                                Debug.init_thread
-                                withCString (printf "Thread %d" cpu) Debug.set_thread_name
                                 catch
                                   (restore $ runWorker tid workerActive workerTaskQueue)
                                   (appendMVar workerException . (tid,))
