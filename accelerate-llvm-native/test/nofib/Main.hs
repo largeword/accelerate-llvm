@@ -31,11 +31,12 @@ import Data.Array.Accelerate.Unsafe
 
 main :: IO ()
 main = do
+  Prelude.print $ runN @Interpreter complex $ fromList (Z:.100) $ Prelude.map (`Prelude.mod` 50) [1 :: Int ..]
   -- benchmarking:
-  defaultMain $ 
-    Prelude.map (benchOption . Prelude.Left) [minBound :: Objective .. maxBound] 
-    Prelude.++ 
-    Prelude.map (benchOption . Prelude.Right) [NoFusion, GreedyFusion]
+  -- defaultMain $ 
+  --   Prelude.map (benchOption . Prelude.Left) [minBound :: Objective .. maxBound] 
+  --   Prelude.++ 
+  --   Prelude.map (benchOption . Prelude.Right) [NoFusion, GreedyFusion]
 
   -- Prelude.print $ runNWithObj @Native ArrayReadsWrites $ quicksort $ use $ fromList (Z :. 5) [100::Int, 200, 3, 5, 4]
   where
