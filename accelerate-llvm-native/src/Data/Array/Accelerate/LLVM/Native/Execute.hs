@@ -184,7 +184,7 @@ bindAwhileIO :: InputOutputR input output -> IO (Values output, Values input)
 bindAwhileIO InputOutputRsignal = do
   signal <- newSignal
   return (ValuesSingle $ Value signal, ValuesSingle $ Value signal)
-bindAwhileIO InputOutputRref = do
+bindAwhileIO (InputOutputRref _) = do
   ioref <- newIORef $ internalError "Illegal schedule: Read from ref without value. Some synchronization might be missing."
   return (ValuesSingle $ Value $ OutputRef ioref, ValuesSingle $ Value $ Ref ioref)
 bindAwhileIO (InputOutputRpair io1 io2) = do
