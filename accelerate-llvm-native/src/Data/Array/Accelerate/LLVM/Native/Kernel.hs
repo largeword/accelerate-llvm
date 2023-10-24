@@ -56,6 +56,7 @@ import Data.Typeable
 import Foreign.LibFFI
 import Foreign.Ptr
 import Prettyprinter
+import Data.String
 import LLVM.AST.Type.Downcast
 import LLVM.AST.Type.Representation
 
@@ -94,4 +95,4 @@ instance PrettyKernel NativeKernel where
     where
       go :: OpenKernelFun NativeKernel env t -> Adoc
       go (KernelFunLam _ f) = go f
-      go (KernelFunBody kernel) = viaShow $ kernelId kernel
+      go (KernelFunBody kernel) = fromString $ take 16 $ show $ kernelId kernel
