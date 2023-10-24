@@ -339,9 +339,6 @@ unsafeToExpVars (TupRsingle (Var g idx)) = case g of
   GroundRbuffer _ -> error "unsafeToExpVars on a buffer"
   GroundRscalar t -> TupRsingle (Var t idx)
 
-instance SLVOperation NativeOp where
-  slvOperation = const Nothing
-
 maybeTy :: TypeR a -> TypeR (PrimMaybe a)
 maybeTy ty = TupRpair (TupRsingle scalarTypeWord8) (TupRpair TupRunit ty)
 
@@ -469,7 +466,7 @@ deriving instance (Eq (BackendClusterArg2 op x y)) => Eq (BackendClusterArg2 (Ju
 
 toOnlyAcc :: Cluster op args -> Cluster (JustAccumulator op) args
 toOnlyAcc (Fused f l r) = Fused f (toOnlyAcc l) (toOnlyAcc r)
-toOnlyAcc (Op (SLVOp (SOp (SOAOp op soa) sort) sa)) = Op (SLVOp (SOp (SOAOp (JA op) soa) sort) sa)
+toOnlyAcc (Op (SLVOp (SOp (SOAOp op soa) sort) sa) label) = Op (SLVOp (SOp (SOAOp (JA op) soa) sort) sa) label
 
 pattern CJ :: f a -> Compose Maybe f a
 pattern CJ x = Compose (Just x)
