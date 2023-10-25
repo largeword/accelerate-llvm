@@ -100,12 +100,12 @@ executeSchedule !workers !threadIdx !env = \case
     executeSchedule workers threadIdx env next
   Awhile io step input next -> do
     executeAwhile workers threadIdx env io step (prjVars input env) next
-  Fork a (Effect (SignalAwait signals) b) -> do
-    scheduleAfter workers (map (`prj` env) signals) $ Job $ \threadIdx' -> executeSchedule workers threadIdx' env b
-    executeSchedule workers threadIdx env a
-  Fork a b -> do
-    schedule workers $ Job $ \threadIdx' -> executeSchedule workers threadIdx' env b
-    executeSchedule workers threadIdx env a
+  Spawn (Effect (SignalAwait signals) a) b -> do
+    scheduleAfter workers (map (`prj` env) signals) $ Job $ \threadIdx' -> executeSchedule workers threadIdx' env a
+    executeSchedule workers threadIdx env b
+  Spawn a b -> do
+    schedule workers $ Job $ \threadIdx' -> executeSchedule workers threadIdx' env a
+    executeSchedule workers threadIdx env b
 
 executeBinding :: Workers -> NativeEnv env -> BasesR t -> Binding env t -> IO (Values t)
 executeBinding workers !env tp = \case
