@@ -23,7 +23,7 @@ import Data.Array.Accelerate.LLVM.Native
 import Data.Array.Accelerate.LLVM.Native.Operation
 import Criterion.Main
 import Control.Monad
-import Prelude (Show(..), IO, )
+import Prelude (Show(..), IO, print, putStrLn)
 import qualified Prelude as Prelude
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solve
 import Data.Array.Accelerate.Data.Bits
@@ -31,15 +31,44 @@ import Data.Array.Accelerate.Unsafe
 
 main :: IO ()
 main = do
-  Prelude.print $ runN @Interpreter complex $ fromList (Z:.100) $ Prelude.map (`Prelude.mod` 50) [1 :: Int ..]
-  -- benchmarking:
-  -- defaultMain $ 
-  --   Prelude.map (benchOption . Prelude.Left) [minBound :: Objective .. maxBound] 
-  --   Prelude.++ 
-  --   Prelude.map (benchOption . Prelude.Right) [NoFusion, GreedyFusion]
+  let xs = fromList (Z :. 10) [1 :: Int ..]
+  let ys = use xs
+  putStrLn "generate:"
+  let f = generate (I1 10) (\(I1 x0) -> 10 :: Exp Int)
+  -- putStrLn $ test @UniformScheduleFun @NativeKernel f
+  print $ run @Native f
 
+  putStrLn "mapmap:"
+  let f = map (+1) . map (*2) -- $ ys
+  -- putStrLn $ test @UniformScheduleFun @NativeKernel f
+  -- putStrLn $ test @UniformScheduleFun @NativeKernel (f ys)
+  print $ runN @Native f xs
+  print $ runN @Native (f ys)
+
+  putStrLn "fold:"
+  let f = fold1 (+) ys
+  -- putStrLn $ test @UniformScheduleFun @NativeKernel f
+  print $ run @Native f
+
+  putStrLn "scan:"
+  let f = scanl1 (+) ys
+  -- putStrLn $ test @UniformScheduleFun @NativeKernel f
+  print $ run @Native f
+ 
   -- Prelude.print $ runNWithObj @Native ArrayReadsWrites $ quicksort $ use $ fromList (Z :. 5) [100::Int, 200, 3, 5, 4]
-  where
+ 
+----------------------------BENCHMARKS------------------------------
+-- complex      from the ILP example
+-- complexAdd   a variation on complex, where the results are zipWith-ed together
+-- singleLoop   from the introduction
+-- diagonal     two maps, fused diagonally
+--------------------------------------------------------------------
+
+benchmarkmain = defaultMain $ 
+    Prelude.map (benchOption . Prelude.Left) [minBound :: Objective .. maxBound] 
+    Prelude.++ 
+    Prelude.map (benchOption . Prelude.Right) [NoFusion, GreedyFusion]
+ where
     benchOption :: Prelude.Either Objective Benchmarking -> Benchmark
     benchOption obj = bgroup (show obj)
       [ 
@@ -72,12 +101,6 @@ main = do
       -- , bench "diagonal'  " $ nf (flip linearIndexArray 0 . Prelude.fst . p) xs) 
       -- ]
 
-----------------------------BENCHMARKS------------------------------
--- complex      from the ILP example
--- complexAdd   a variation on complex, where the results are zipWith-ed together
--- singleLoop   from the introduction
--- diagonal     two maps, fused diagonally
---------------------------------------------------------------------
 
 complex :: Acc (Vector Int) -> Acc (Vector Int, Vector Int)
 complex xs = 

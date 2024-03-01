@@ -97,6 +97,7 @@ codegen uid env (Clustered c b) args =
     workstealLoop workstealIndex workstealActiveThreads (op scalarTypeInt32 $ constant (TupRsingle scalarTypeInt32) 1) $ \_ -> do
       let b' = mapArgs BCAJA b
       (acc, loopsize') <- execStateT (evalCluster (toOnlyAcc c) b' args gamma ()) (mempty, LS ShapeRz OP_Unit)
+      Debug.Trace.traceShow loopsize' $ return ()
       body acc loopsize'
       retval_ $ boolean True
     where
@@ -118,7 +119,15 @@ codegen uid env (Clustered c b) args =
               -- (ShapeRz,_) -> error "tiny cluster"
               -- (ShapeRsnoc shr', OP_Pair sh' sz) -> 
               (shr', sh') ->
-                evalStateT (go shr' sh' (1, constant typerInt 0, [])) initialAcc
+                flip evalStateT initialAcc $ do
+                  -- we add one more layer here, for writing scalars -- e.g. the output of a fold over a vector
+                  go shr' sh' (1, constant typerInt 0, [])
+                  let ba = makeBackendArg @NativeOp args gamma c b
+                  let i = (0, constant typerInt 0 ,[])
+                  newInputs <- readInputs @_ @_ @NativeOp i args ba gamma
+                  outputs <- evalOps @NativeOp i c newInputs args gamma
+                  writeOutputs @_ @_ @NativeOp i args outputs gamma
+
       iter' :: Operands Int
             -> (Int, Operands Int, [Operands Int])
             -> ((Int, Operands Int, [Operands Int]) -> StateT Accumulated (CodeGen Native) ()) -> StateT Accumulated (CodeGen Native) ()
@@ -219,15 +228,16 @@ instance EvalOp NativeOp where
   subtup (SubTupRpair a b) (CJ (OP_Pair x y)) = CJ $ OP_Pair ((\(CJ z)->z) $ subtup @NativeOp a $ CJ x) ((\(CJ z)->z) $ subtup @NativeOp b $ CJ y)
 
   -- the scalartypes guarantee that there is always only one buffer, and that the unsafeCoerce from (Buffers e) to (Buffer e) is safe
-  writeOutput tp sh ~(TupRsingle buf) gamma (d,i,_) = \case
+  writeOutput tp sh (TupRsingle buf) gamma (d,i,_) = \case
     CN -> pure ()
     CJ x -> lift $ Prelude.when (sh `isAtDepth` d) $ writeBuffer tp TypeInt (aprjBuffer (unsafeCoerce buf) gamma) (op TypeInt i) (op tp x)
+  writeOutput _ _ _ _ _ = error "not single"
   readInput :: forall e env sh. ScalarType e -> GroundVars env sh -> GroundVars env (Buffers e) -> Gamma env -> BackendClusterArg2 NativeOp env (In sh e) -> (Int, Operands Int, [Operands Int]) -> StateT Accumulated (CodeGen Native) (Compose Maybe Operands e)
   readInput _ _ _ _ _ (d,_,is) | d /= length is = error "fail"
-  readInput tp sh ~(TupRsingle buf) gamma (BCAN2 Nothing d') (d,i, _)
+  readInput tp sh (TupRsingle buf) gamma (BCAN2 Nothing d') (d,i, _)
     | d /= d' = pure CN
     | otherwise = lift $ CJ . ir tp <$> readBuffer tp TypeInt (aprjBuffer (unsafeCoerce buf) gamma) (op TypeInt i)
-  readInput tp sh ~(TupRsingle buf) gamma (BCAN2 (Just (BP shr1 (shr2 :: ShapeR sh2) f ls)) _) (d,_,ix)
+  readInput tp sh (TupRsingle buf) gamma (BCAN2 (Just (BP shr1 (shr2 :: ShapeR sh2) f ls)) _) (d,_,ix)
     | Just Refl <- varsContainsThisShape sh shr2
     , shr1 `isAtDepth'` d
     = lift $ CJ . ir tp <$> do
@@ -237,6 +247,7 @@ instance EvalOp NativeOp where
       i <- intOfIndex shr2 sh' sh2
       readBuffer tp TypeInt (aprjBuffer (unsafeCoerce buf) gamma) (op TypeInt i)
     | otherwise = pure CN
+  readInput _ _ _ _ _ _ = error "not single"
 
   evalOp  :: (Int, Operands Int, [Operands Int])
           -> Label
@@ -251,9 +262,9 @@ instance EvalOp NativeOp where
       _   -> pure CN
   evalOp _ _ NBackpermute _ (Push (Push (Push Env.Empty (BAE (Shape' shr sh) _)) (BAE (Value' x _) _)) _)
     = lift $ pure $ Push Env.Empty $ FromArg $ Value' x $ Shape' shr sh
-  evalOp (d',_,is) _ NGenerate gamma (Push (Push Env.Empty (BAE (Shape' shr ~(CJ sh)) _)) (BAE f (BCAN2 Nothing d)))
+  evalOp (d',_,is) _ NGenerate gamma (Push (Push Env.Empty (BAE (Shape' shr (CJ sh)) _)) (BAE f (BCAN2 Nothing d)))
     | shr `isAtDepth'` d' = lift $ Push Env.Empty . FromArg . flip Value' (Shape' shr (CJ sh)) . CJ <$> app1 (llvmOfFun1 @Native f gamma) (multidim shr is)
-    | d' == d = error "how come we didn't hit the case above?"
+    | d' == d = error $ "how come we didn't hit the case above?" <> show (d', d, rank shr)
     | otherwise        = pure $ Push Env.Empty $ FromArg $ Value' CN (Shape' shr (CJ sh))
   evalOp (d',_,is) _ NGenerate gamma (Push (Push Env.Empty (BAE (Shape' shr sh) _)) (BAE f (BCAN2 (Just (BP shrO shrI idxTransform ls)) d)))
     | not $ shrO `isAtDepth'` d'
@@ -285,11 +296,12 @@ instance EvalOp NativeOp where
         pure Env.Empty
     | d == d' = error "case above?"
     | otherwise = pure Env.Empty
-  evalOp (d',_,~(inner:_)) l NScanl1 gamma (Push (Push _ (BAE (Value' x' sh) (BCAN2 Nothing d))) (BAE f' _))
+  evalOp (d',_,ixs) l NScanl1 gamma (Push (Push _ (BAE (Value' x' sh) (BCAN2 Nothing d))) (BAE f' _))
     | f <- llvmOfFun2 @Native f' gamma
     , Lam (lhsToTupR -> ty :: TypeR e) _ <- f'
     , CJ x <- x'
     , d == d'
+    , inner:_ <- ixs
     = StateT $ \acc -> do
         let (Exists (unsafeCoerce @(Operands _) @(Operands e) -> accX), eTy) = acc M.! l
         z <- ifThenElse (ty, eq singleType inner (constant typerInt 0)) (pure x) (app2 f accX x) -- note: need to apply the accumulator as the _left_ argument to the function
@@ -298,11 +310,12 @@ instance EvalOp NativeOp where
   evalOp _ _ NScanl1 gamma (Push (Push _ (BAE (Value' x' sh) (BCAN2 (Just (BP{})) d))) (BAE f' _)) = error "backpermuted scan"
   evalOp i l NFold1 gamma args = error "todo: fold1"
   -- we can ignore the index permutation for folds here
-  evalOp (d',_,~(inner:_)) l NFold2 gamma (Push (Push _ (BAE (Value' x' sh@(Shape' (ShapeRsnoc shr') ~(CJ (OP_Pair sh' _)))) (BCAN2 _ d))) (BAE f' _))
+  evalOp (d',_,ixs) l NFold2 gamma (Push (Push _ (BAE (Value' x' sh@(Shape' (ShapeRsnoc shr') (CJ (OP_Pair sh' _)))) (BCAN2 _ d))) (BAE f' _))
     | f <- llvmOfFun2 @Native f' gamma
     , Lam (lhsToTupR -> ty :: TypeR e) _ <- f'
     , CJ x <- x'
     , d == d'
+    , inner:_ <- ixs
     = StateT $ \acc -> do
         let (Exists (unsafeCoerce @(Operands _) @(Operands e) -> accX), eTy) = acc M.! l
         z <- ifThenElse (ty, eq singleType inner (constant typerInt 0)) (pure x) (app2 f accX x) -- note: need to apply the accumulator as the _left_ argument to the function
@@ -314,6 +327,7 @@ instance EvalOp NativeOp where
         let (Exists (unsafeCoerce @(Operands _) @(Operands e) -> x), _) = acc M.! l
         pure (Push Env.Empty $ FromArg (Value' (CJ x) (Shape' shr' (CJ sh'))), acc)
     | otherwise = pure $ Push Env.Empty $ FromArg (Value' CN (Shape' shr' (CJ sh')))
+  -- evalOp _ _ _ _ _ = error "unmatched pattern?"
 
 multidim :: ShapeR sh -> [Operands Int] -> Operands sh
 multidim ShapeRz [] = OP_Unit
@@ -359,6 +373,9 @@ newtype JustAccumulator a b = JA (a b)
 data Loopsizes where
   LS :: ShapeR sh -> Operands sh -> Loopsizes
 
+instance Show Loopsizes where
+  show (LS shr op) = "Loop of rank " <> show (rank shr)
+
 merge :: Loopsizes -> GroundVars env sh -> Gamma env -> Loopsizes
 merge ls v gamma = combine ls $ LS (gvarsToShapeR v) (aprjParameters (unsafeToExpVars v) gamma)
 
@@ -394,7 +411,7 @@ instance EvalOp (JustAccumulator NativeOp) where
   type EnvF (JustAccumulator NativeOp) = GroundOperand
 
   unit = TupRunit
-
+  embed = error "not needed"
   indexsh  vars _ = pure $ mapTupR varType $ unsafeToExpVars vars
   indexsh' vars _ = pure $ mapTupR varType vars
 
@@ -406,7 +423,7 @@ instance EvalOp (JustAccumulator NativeOp) where
   readInput ty sh _ gamma (BCA2JA (BCAN2 Nothing  d)) _ = StateT $ \(acc,ls) -> pure (TupRsingle ty, (acc, merge ls sh gamma))
   readInput ty sh _ gamma (BCA2JA (BCAN2 (Just (BP _ _ _ ls')) d)) _ = StateT $ \(acc,ls) -> pure (TupRsingle ty, (acc, merge ls ls' gamma))
 
-  writeOutput _ _ _ _ _ _ = pure ()
+  writeOutput ty sh buf gamma ix x = StateT $ \(acc,ls) -> pure ((), (acc, merge ls sh gamma))
 
   evalOp () l (JA NScanl1) _ (Push (Push _ (BAE (Value' ty sh) _)) (BAE f _))
     = StateT $ \(acc,ls) -> do
@@ -441,6 +458,7 @@ instance MakesILP op => MakesILP (JustAccumulator op) where
   labelLabelledArg = undefined
   getClusterArg = undefined
   encodeBackendClusterArg = undefined
+  combineBackendClusterArg = undefined
   -- probably just never running anything here
   -- this is really just here because MakesILP is a superclass
 
@@ -452,6 +470,7 @@ instance (StaticClusterAnalysis op, EnvF (JustAccumulator op) ~ EnvF op) => Stat
   valueToIn    x = coerce @(BackendClusterArg2 op _ _) @(BackendClusterArg2 (JustAccumulator op) _ _) $ valueToIn $ coerce x
   valueToOut   x = coerce @(BackendClusterArg2 op _ _) @(BackendClusterArg2 (JustAccumulator op) _ _) $ valueToOut $ coerce x
   inToValue    x = coerce @(BackendClusterArg2 op _ _) @(BackendClusterArg2 (JustAccumulator op) _ _) $ inToValue $ coerce x
+  inToVar      x = coerce @(BackendClusterArg2 op _ _) @(BackendClusterArg2 (JustAccumulator op) _ _) $ inToVar $ coerce x
   outToValue   x = coerce @(BackendClusterArg2 op _ _) @(BackendClusterArg2 (JustAccumulator op) _ _) $ outToValue $ coerce x
   outToSh      x = coerce @(BackendClusterArg2 op _ _) @(BackendClusterArg2 (JustAccumulator op) _ _) $ outToSh $ coerce x
   shToOut      x = coerce @(BackendClusterArg2 op _ _) @(BackendClusterArg2 (JustAccumulator op) _ _) $ shToOut $ coerce x
@@ -469,7 +488,7 @@ deriving instance (Eq (BackendClusterArg2 op x y)) => Eq (BackendClusterArg2 (Ju
 
 toOnlyAcc :: Cluster op args -> Cluster (JustAccumulator op) args
 toOnlyAcc (Fused f l r) = Fused f (toOnlyAcc l) (toOnlyAcc r)
-toOnlyAcc (Op (SLVOp (SOp (SOAOp op soa) sort) sa)) = Op (SLVOp (SOp (SOAOp (JA op) soa) sort) sa)
+toOnlyAcc (Op (SOp (SOAOp op soa) sort) l) = Op (SOp (SOAOp (JA op) soa) sort) l
 
 pattern CJ :: f a -> Compose Maybe f a
 pattern CJ x = Compose (Just x)

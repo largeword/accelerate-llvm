@@ -215,7 +215,7 @@ instance MakesILP NativeOp where
       (    inputConstraints l lIns
         <> ILP.c (InDir l) .==. int i
         <> ILP.c (InDims l) .==. ILP.c (OutDims l)
-        <> rankifmanifest shrO l
+        <> inrankifmanifest shrO l
           -- .+. timesN (int 3 .+. c (OutDir l)) 
           -- When we switch to gather, like in the paper, we need to add this term.
           -- 4 + dir is always positive, and this is exactly why we (elsewhere) define `n` as `5+(size nodes)`
@@ -226,7 +226,7 @@ instance MakesILP NativeOp where
   mkGraph NGenerate (_ :>: L (ArgArray Out (ArrayR shr _) _ _) _ :>: ArgsNil) l =
     Graph.Info
       mempty
-      (rankifmanifest shr l)
+      (outrankifmanifest shr l)
       (defaultBounds l)
   mkGraph NMap (_ :>: L (ArgArray In (ArrayR shr _) _ _) (_, lIns) :>: _ :>: ArgsNil) l =
     Graph.Info
@@ -234,7 +234,7 @@ instance MakesILP NativeOp where
       (    inputConstraints l lIns
         <> ILP.c (InDir  l) .==. ILP.c (OutDir  l)
         <> ILP.c (InDims l) .==. ILP.c (OutDims l)
-        <> rankifmanifest shr l)
+        <> inrankifmanifest shr l)
       (defaultBounds l)
   mkGraph NPermute (_ :>: L _ (_, lTargets) :>: L _ (_, lLocks) :>: _ :>: L (ArgArray In (ArrayR shr _) _ _) (_, lIns) :>: ArgsNil) l =
     Graph.Info
@@ -268,7 +268,7 @@ instance MakesILP NativeOp where
       (    inputConstraints l lIns
         <> ILP.c (InDir  l) .==. ILP.c (OutDir l)
         <> ILP.c (InDims l) .==. int 1 .+. ILP.c (OutDims l)
-        <> rankifmanifest (ShapeRsnoc shr) l)
+        <> inrankifmanifest (ShapeRsnoc shr) l)
       (defaultBounds l)
 
   labelLabelledArg :: M.Map (Graph.Var NativeOp) Int -> Label -> LabelledArg env a -> LabelledArgOp NativeOp env a
@@ -289,9 +289,13 @@ inputConstraints l = foldMap $ \lIn ->
     <>          timesN (fused lIn l) .>=. ILP.c (InDims l) .-. ILP.c (OutDims lIn)
     <> (-1) .*. timesN (fused lIn l) .<=. ILP.c (InDims l) .-. ILP.c (OutDims lIn)
 
-rankifmanifest :: ShapeR sh -> Label -> Constraint NativeOp
-rankifmanifest shr l = ILP.int (rank shr) .+. timesN (manifest l) .>=. ILP.c (InDims l)
-                    <> ILP.int (rank shr) .-. timesN (manifest l) .<=. ILP.c (InDims l)
+inrankifmanifest :: ShapeR sh -> Label -> Constraint NativeOp
+inrankifmanifest shr l = ILP.int (rank shr) .+. timesN (manifest l) .>=. ILP.c (InDims l)
+                      <> ILP.int (rank shr) .-. timesN (manifest l) .<=. ILP.c (InDims l)
+
+outrankifmanifest :: ShapeR sh -> Label -> Constraint NativeOp
+outrankifmanifest shr l = ILP.int (rank shr) .+. timesN (manifest l) .>=. ILP.c (OutDims l)
+                       <> ILP.int (rank shr) .-. timesN (manifest l) .<=. ILP.c (OutDims l)
         
         
 
@@ -309,6 +313,8 @@ instance ShrinkArg (BackendClusterArg NativeOp) where
 data IndexPermutation env where
   BP :: ShapeR sh1 -> ShapeR sh2 -> Fun env (sh1 -> sh2) -> GroundVars env sh1 -> IndexPermutation env
 type Depth = Int
+instance Show (BackendClusterArg2 NativeOp env arg) where
+  show (BCAN2 _ d) = "depth " <> show d
 instance StaticClusterAnalysis NativeOp where
   data BackendClusterArg2 NativeOp env arg where
     BCAN2 :: Maybe (IndexPermutation env) -> Depth -> BackendClusterArg2 NativeOp env arg
@@ -334,7 +340,9 @@ instance StaticClusterAnalysis NativeOp where
     | otherwise = error "BP shapeR doesn't match backpermute output shape"
   onOp NBackpermute (BCAN2 Nothing d           :>: ArgsNil) (ArgFun f :>: ArgArray In (ArrayR shrI _) _ _ :>: ArgArray Out (ArrayR shrO _) sh _ :>: ArgsNil) _
                                           = BCAN2 Nothing d :>: BCAN2 (Just (BP shrO shrI f sh)) d             :>: BCAN2 Nothing d           :>: ArgsNil    
-  onOp NGenerate (bp :>: ArgsNil) _ _ = bcan2id bp :>: bp :>: ArgsNil -- storing the bp in the function argument. Probably not required, could just take it from the array one during codegen
+  onOp NGenerate (bp :>: ArgsNil) (_:>:ArgArray Out (ArrayR shR _) _ _ :>:ArgsNil) _ = 
+    Debug.Trace.traceShow (bp, rank shR) $
+    bcan2id bp :>: bp :>: ArgsNil -- storing the bp in the function argument. Probably not required, could just take it from the array one during codegen
   onOp NPermute ArgsNil (_:>:_:>:_:>:_:>:ArgArray In (ArrayR shR _) _ _ :>:ArgsNil) _ = 
     BCAN2 Nothing 0 :>: BCAN2 Nothing 0 :>: BCAN2 Nothing 0 :>: BCAN2 Nothing 0 :>: BCAN2 Nothing (rank shR) :>: ArgsNil
   onOp NFold2  (bp :>: ArgsNil) (_ :>: ArgArray In _ fs _ :>: _ :>: ArgsNil) _ = BCAN2 Nothing 0 :>: fold2bp bp (case fs of TupRpair _ x -> x) :>: bp :>: ArgsNil
