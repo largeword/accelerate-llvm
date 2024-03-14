@@ -250,7 +250,7 @@ createBlocks
           in
           trace (bformat ("generated " % int % " instructions in " % int % " blocks") (n+m) m) ( F.toList blocks , s' )
   where
-    makeBlock b@Block{..} = --Debug.Trace.traceShow b $
+    makeBlock b@Block{..} = 
       LLVM.BasicBlock (downcast blockLabel) (F.toList instructions) (LLVM.Do terminator)
 
 

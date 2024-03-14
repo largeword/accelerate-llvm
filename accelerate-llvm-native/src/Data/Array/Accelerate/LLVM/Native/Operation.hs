@@ -115,7 +115,7 @@ instance DesugarAcc NativeOp where
   mkScan _ _ _ _ _ = error "todo" 
   mkPermute     a b@(ArgArray _ (ArrayR shr _) sh _) c d
     | DeclareVars lhs w lock <- declareVars $ buffersR $ TupRsingle scalarTypeWord8
-    = Debug.Trace.trace "hello??" $ aletUnique lhs 
+    = aletUnique lhs 
         (Alloc shr scalarTypeWord8 $ groundToExpVar (shapeType shr) sh)
         $ alet LeftHandSideUnit
           (Exec NGenerate ( -- TODO: The old pipeline used a 'memset 0' instead, which sounds faster...
@@ -206,8 +206,9 @@ pattern OutDims  l = BackendSpecific (Dims           OutArr l)
 -- TODO: constraints and bounds for the new variable(s)
 instance MakesILP NativeOp where
   type BackendVar NativeOp = NativeILPVar
-  type BackendArg NativeOp = (Int, Depth) -- direction, depth
-  data BackendClusterArg NativeOp a = BCAN Depth
+  type BackendArg NativeOp = (Int, IterationDepth) -- direction, depth
+  defaultBA = (0,0)
+  data BackendClusterArg NativeOp a = BCAN IterationDepth
 
   mkGraph NBackpermute (_ :>: L (ArgArray In (ArrayR _shrI _) _ _) (_, lIns) :>: L (ArgArray Out (ArrayR shrO _) _ _) _ :>: ArgsNil) l@(Label i _) =
     Graph.Info
@@ -312,12 +313,14 @@ instance ShrinkArg (BackendClusterArg NativeOp) where
 
 data IndexPermutation env where
   BP :: ShapeR sh1 -> ShapeR sh2 -> Fun env (sh1 -> sh2) -> GroundVars env sh1 -> IndexPermutation env
-type Depth = Int
+type IterationDepth = Int
 instance Show (BackendClusterArg2 NativeOp env arg) where
-  show (BCAN2 _ d) = "depth " <> show d
+  show (BCAN2 i d) = "{ depth = " <> show d <> ", perm = " <> show i <> " }"
+instance Show (IndexPermutation env) where
+  show (BP sh1 sh2 _ _) = show (rank sh1) <> "->" <> show (rank sh2)
 instance StaticClusterAnalysis NativeOp where
   data BackendClusterArg2 NativeOp env arg where
-    BCAN2 :: Maybe (IndexPermutation env) -> Depth -> BackendClusterArg2 NativeOp env arg
+    BCAN2 :: Maybe (IndexPermutation env) -> IterationDepth -> BackendClusterArg2 NativeOp env arg
   def _ _ (BCAN i) = BCAN2 Nothing i
   unitToVar    = bcan2id
   varToUnit    = bcan2id
@@ -341,7 +344,6 @@ instance StaticClusterAnalysis NativeOp where
   onOp NBackpermute (BCAN2 Nothing d           :>: ArgsNil) (ArgFun f :>: ArgArray In (ArrayR shrI _) _ _ :>: ArgArray Out (ArrayR shrO _) sh _ :>: ArgsNil) _
                                           = BCAN2 Nothing d :>: BCAN2 (Just (BP shrO shrI f sh)) d             :>: BCAN2 Nothing d           :>: ArgsNil    
   onOp NGenerate (bp :>: ArgsNil) (_:>:ArgArray Out (ArrayR shR _) _ _ :>:ArgsNil) _ = 
-    Debug.Trace.traceShow (bp, rank shR) $
     bcan2id bp :>: bp :>: ArgsNil -- storing the bp in the function argument. Probably not required, could just take it from the array one during codegen
   onOp NPermute ArgsNil (_:>:_:>:_:>:_:>:ArgArray In (ArrayR shR _) _ _ :>:ArgsNil) _ = 
     BCAN2 Nothing 0 :>: BCAN2 Nothing 0 :>: BCAN2 Nothing 0 :>: BCAN2 Nothing 0 :>: BCAN2 Nothing (rank shR) :>: ArgsNil
@@ -370,7 +372,10 @@ fold2bp (BCAN2 (Just (BP shr1 shr2 g sh)) i) foldsize = flip BCAN2 (i+1) $ Just 
     (TupRpair sh foldsize)
 
 instance Eq (BackendClusterArg2 NativeOp env arg) where
-  BCAN2 p i == BCAN2 p' i' = p == p' && i == i'
+  x@(BCAN2 p i) == y@(BCAN2 p' i') = f $ p == p' && i == i'
+    where
+      f True = True
+      f False = False
 instance Eq (IndexPermutation env) where
   (BP shr1 shr2 f _) == (BP shr1' shr2' f' _)
     | Just Refl <- matchShapeR shr1 shr1'

@@ -97,7 +97,6 @@ codegen uid env (Clustered c b) args =
     workstealLoop workstealIndex workstealActiveThreads (op scalarTypeInt32 $ constant (TupRsingle scalarTypeInt32) 1) $ \_ -> do
       let b' = mapArgs BCAJA b
       (acc, loopsize') <- execStateT (evalCluster (toOnlyAcc c) b' args gamma ()) (mempty, LS ShapeRz OP_Unit)
-      Debug.Trace.traceShow loopsize' $ return ()
       body acc loopsize'
       retval_ $ boolean True
     where
@@ -281,8 +280,7 @@ instance EvalOp NativeOp where
     (BAE (flip (llvmOfFun2 @Native) gamma -> c) _)) -- combination function
     | CJ x <- x'
     , shrx `isAtDepth'` d'
-    = Debug.Trace.trace "generating code for permute" $
-      lift $ do
+    = lift $ do
         ix' <- app1 f (multidim shrx is)
         -- project element onto the destination array and (atomically) update
         when (isJust ix') $ do
@@ -484,6 +482,7 @@ instance (StaticClusterAnalysis op, EnvF (JustAccumulator op) ~ EnvF op) => Stat
   varToUnit    x = coerce @(BackendClusterArg2 op _ _) @(BackendClusterArg2 (JustAccumulator op) _ _) $ varToUnit $ coerce x
 
 deriving instance (Eq (BackendClusterArg2 op x y)) => Eq (BackendClusterArg2 (JustAccumulator op) x y)
+deriving instance (Show (BackendClusterArg2 op x y)) => Show (BackendClusterArg2 (JustAccumulator op) x y)
 
 
 toOnlyAcc :: Cluster op args -> Cluster (JustAccumulator op) args

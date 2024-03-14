@@ -33,27 +33,35 @@ main :: IO ()
 main = do
   let xs = fromList (Z :. 10) [1 :: Int ..]
   let ys = use xs
-  putStrLn "generate:"
-  let f = generate (I1 10) (\(I1 x0) -> 10 :: Exp Int)
-  -- putStrLn $ test @UniformScheduleFun @NativeKernel f
+
+
+  let f = T2 (map (+1) ys) (map (*2) $ reverse ys)
+  -- let f = --map (\(T2 a b) -> a + b) $ 
+  --          zip ys $ reverse ys
+  putStrLn $ test @UniformScheduleFun @NativeKernel f
   print $ run @Native f
 
-  putStrLn "mapmap:"
-  let f = map (+1) . map (*2) -- $ ys
-  -- putStrLn $ test @UniformScheduleFun @NativeKernel f
-  -- putStrLn $ test @UniformScheduleFun @NativeKernel (f ys)
-  print $ runN @Native f xs
-  print $ runN @Native (f ys)
+  -- putStrLn "generate:"
+  -- let f = generate (I1 10) (\(I1 x0) -> 10 :: Exp Int)
+  -- -- putStrLn $ test @UniformScheduleFun @NativeKernel f
+  -- print $ run @Native f
 
-  putStrLn "fold:"
-  let f = fold1 (+) ys
-  -- putStrLn $ test @UniformScheduleFun @NativeKernel f
-  print $ run @Native f
+  -- putStrLn "mapmap:"
+  -- let f = map (+1) . map (*2) -- $ ys
+  -- -- putStrLn $ test @UniformScheduleFun @NativeKernel f
+  -- -- putStrLn $ test @UniformScheduleFun @NativeKernel (f ys)
+  -- print $ runN @Native f xs
+  -- print $ runN @Native (f ys)
 
-  putStrLn "scan:"
-  let f = scanl1 (+) ys
-  -- putStrLn $ test @UniformScheduleFun @NativeKernel f
-  print $ run @Native f
+  -- putStrLn "fold:"
+  -- let f = fold1 (+) ys
+  -- -- putStrLn $ test @UniformScheduleFun @NativeKernel f
+  -- print $ run @Native f
+
+  -- putStrLn "scan:"
+  -- let f = scanl1 (+) ys
+  -- -- putStrLn $ test @UniformScheduleFun @NativeKernel f
+  -- print $ run @Native f
  
   -- Prelude.print $ runNWithObj @Native ArrayReadsWrites $ quicksort $ use $ fromList (Z :. 5) [100::Int, 200, 3, 5, 4]
  
