@@ -32,14 +32,19 @@ import Data.Array.Accelerate.Unsafe
 main :: IO ()
 main = do
   let xs = fromList (Z :. 10) [1 :: Int ..]
-  let ys = use xs
+  let ys = map (\x -> T2 x x) $ 
+            use xs
 
 
-  let f = T2 (map (+1) ys) (map (*2) $ reverse ys)
-  -- let f = --map (\(T2 a b) -> a + b) $ 
-  --          zip ys $ reverse ys
-  putStrLn $ test @UniformScheduleFun @NativeKernel f
-  print $ run @Native f
+  -- let f = T2 (map (+1) ys) (map (*2) $ reverse ys)
+  -- let f = sum $ map (\(T2 a b) -> a + b) $ 
+  --          zip (reverse $ map (+1) (reverse ys)) $ reverse ys
+  let Z_ ::. n = shape ys
+  let f'' = backpermute (Z_ ::. 5 ::. 2) (\(I2 x y) -> I1 (x*y)) ys
+  let f' = replicate (Z_ ::. All_ ::. n) ys
+  let f = zip (reverse ys) ys
+  putStrLn $ test @UniformScheduleFun @NativeKernel $ backpermute (Z_ ::. 5) (\x->x) (reverse ys)
+  -- print $ run @Native $ f
 
   -- putStrLn "generate:"
   -- let f = generate (I1 10) (\(I1 x0) -> 10 :: Exp Int)
