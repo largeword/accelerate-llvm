@@ -173,11 +173,11 @@ instance SimplifyOperation NativeOp where
   detectCopy matchVars' NBackpermute = detectBackpermuteCopies matchVars'
   detectCopy _ _                     = const []
 
--- instance SLVOperation NativeOp where
---   slvOperation NGenerate    = defaultSlvGenerate    NGenerate
---   slvOperation NMap         = defaultSlvMap         NMap
---   slvOperation NBackpermute = defaultSlvBackpermute NBackpermute
---   slvOperation _ = Nothing
+instance SLVOperation NativeOp where
+  slvOperation NGenerate    = defaultSlvGenerate    NGenerate
+  slvOperation NMap         = defaultSlvMap         NMap
+  slvOperation NBackpermute = defaultSlvBackpermute NBackpermute
+  slvOperation _ = Nothing
 
 instance EncodeOperation NativeOp where
   encodeOperation NMap         = intHost $(hashQ ("Map" :: String))

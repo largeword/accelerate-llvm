@@ -351,9 +351,6 @@ unsafeToExpVars (TupRsingle (Var g idx)) = case g of
   GroundRbuffer _ -> error "unsafeToExpVars on a buffer"
   GroundRscalar t -> TupRsingle (Var t idx)
 
-instance SLVOperation NativeOp where
-  slvOperation = const Nothing
-
 maybeTy :: TypeR a -> TypeR (PrimMaybe a)
 maybeTy ty = TupRpair (TupRsingle scalarTypeWord8) (TupRpair TupRunit ty)
 

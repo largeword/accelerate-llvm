@@ -35,7 +35,7 @@ main = do
   let ys = map (\x -> T2 x x) $ 
             use xs
 
-
+  let program = let xs = A.use (A.fromList (A.Z A.:. 10) ([0..] :: [Int])) in A.zip (A.reverse xs) (A.reverse $ A.backpermute (A.I1 10) Prelude.id (xs :: A.Acc (A.Vector Int)))
   -- let f = T2 (map (+1) ys) (map (*2) $ reverse ys)
   -- let f = sum $ map (\(T2 a b) -> a + b) $ 
   --          zip (reverse $ map (+1) (reverse ys)) $ reverse ys
@@ -43,8 +43,8 @@ main = do
   let f'' = backpermute (Z_ ::. 5 ::. 2) (\(I2 x y) -> I1 (x*y)) ys
   let f' = replicate (Z_ ::. All_ ::. n) ys
   let f = zip (reverse ys) ys
-  putStrLn $ test @UniformScheduleFun @NativeKernel $ backpermute (Z_ ::. 5) (\x->x) (reverse ys)
-  -- print $ run @Native $ f
+  putStrLn $ test @UniformScheduleFun @NativeKernel $ program -- backpermute (Z_ ::. 5) (\x->x) (reverse ys)
+  print $ runN @Native $ program
 
   -- putStrLn "generate:"
   -- let f = generate (I1 10) (\(I1 x0) -> 10 :: Exp Int)

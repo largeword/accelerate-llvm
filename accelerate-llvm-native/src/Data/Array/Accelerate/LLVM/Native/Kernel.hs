@@ -33,6 +33,7 @@ import Data.Array.Accelerate.AST.Schedule.Uniform
 import Data.Array.Accelerate.Backend
 import Data.Array.Accelerate.Error
 import Data.Array.Accelerate.Lifetime
+import Data.Array.Accelerate.Pretty.Schedule
 
 import Data.Array.Accelerate.LLVM.State
 import Data.Array.Accelerate.LLVM.Native.State
@@ -55,6 +56,7 @@ import Data.Typeable
 import Foreign.LibFFI
 import Foreign.Ptr
 import Prettyprinter
+import Data.String
 import LLVM.AST.Type.Downcast
 import LLVM.AST.Type.Representation
 
@@ -89,4 +91,8 @@ instance IsKernel NativeKernel where
   kernelMetadata kernel = NativeKernelMetadata $ sizeOfEnv kernel
 
 instance PrettyKernel NativeKernel where
-  prettyKernel = PrettyKernelBody True $ \_ kernel -> viaShow $ kernelId kernel
+  prettyKernel = PrettyKernelFun go
+    where
+      go :: OpenKernelFun NativeKernel env t -> Adoc
+      go (KernelFunLam _ f) = go f
+      go (KernelFunBody kernel) = fromString $ take 16 $ show $ kernelId kernel
