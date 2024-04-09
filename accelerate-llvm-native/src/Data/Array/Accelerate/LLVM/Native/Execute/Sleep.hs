@@ -18,6 +18,7 @@
 
 module Data.Array.Accelerate.LLVM.Native.Execute.Sleep
   ( SleepScope, newSleepScope, sleepIf, wakeAll
+  , WakeReason(..)
   ) where
 
 import Data.Atomics
@@ -35,10 +36,12 @@ newSleepScope = do
 data State
   -- Some thread is waiting. The MVar is to be filled when new work is
   -- available.
-  = Waiting {-# UNPACK #-} !(MVar ())
+  = Waiting {-# UNPACK #-} !(MVar WakeReason)
   -- All threads are busy. The MVar is currently not used (and is empty).
   -- It will be used when the state changes to waiting.
-  | Busy    {-# UNPACK #-} !(MVar ())
+  | Busy    {-# UNPACK #-} !(MVar WakeReason)
+
+data WakeReason = Work | Exit
 
 -- Invariants:
 --   * If the state is Waiting, then 'sleepIf' will not write to the state.
@@ -46,7 +49,7 @@ data State
 -- That will ensure that if a CAS fails, then it was interleaved by (at least)
 -- another call to the same function.
 
-sleepIf :: SleepScope -> IO (Bool) -> IO ()
+sleepIf :: SleepScope -> IO (Bool) -> IO WakeReason
 sleepIf (SleepScope ref) condition = do
   ticket <- readForCAS ref
   case peekTicket ticket of
@@ -58,7 +61,7 @@ sleepIf (SleepScope ref) condition = do
         readMVar mvar
       else
         -- Don't wait
-        return ()
+        return Work
     Busy mvar -> do
       -- No thread is waiting yet
       c <- condition
@@ -75,10 +78,10 @@ sleepIf (SleepScope ref) condition = do
         -- will be woken when a value is written.
       else
         -- Don't wait
-        return ()
+        return Work
 
-wakeAll :: SleepScope -> IO ()
-wakeAll (SleepScope ref) = do
+wakeAll :: SleepScope -> WakeReason -> IO ()
+wakeAll (SleepScope ref) reason = do
   ticket <- readForCAS ref
   case peekTicket ticket of
     -- No need to wake anyone!
@@ -92,5 +95,5 @@ wakeAll (SleepScope ref) = do
       -- interleaved by other threads doing 'wakeAll' and 'sleepIf'.
 
       -- Wake all threads
-      when success $ putMVar mvar ()
+      when success $ putMVar mvar reason
 
