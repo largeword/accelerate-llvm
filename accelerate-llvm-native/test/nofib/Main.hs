@@ -28,23 +28,43 @@ import qualified Prelude as Prelude
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solve
 import Data.Array.Accelerate.Data.Bits
 import Data.Array.Accelerate.Unsafe
+import Control.Concurrent
 
 main :: IO ()
 main = do
-  let xs = fromList (Z :. 10) [1 :: Int ..]
-  let ys = map (\x -> T2 x x) $ 
-            use xs
+  let x = A.runN @Native $ A.zipWith (+) (A.use $ A.fromList (Z:.10) [1::Int ..]) (A.use $ A.fromList (Z:.10) [0..])
+  print x 
+  putStrLn "hi"
+  threadDelay 10000000
+  putStrLn "bye"
 
-  let program = let xs = A.use (A.fromList (A.Z A.:. 10) ([0..] :: [Int])) in A.zip (A.reverse xs) (A.reverse $ A.backpermute (A.I1 10) Prelude.id (xs :: A.Acc (A.Vector Int)))
-  -- let f = T2 (map (+1) ys) (map (*2) $ reverse ys)
-  -- let f = sum $ map (\(T2 a b) -> a + b) $ 
-  --          zip (reverse $ map (+1) (reverse ys)) $ reverse ys
-  let Z_ ::. n = shape ys
-  let f'' = backpermute (Z_ ::. 5 ::. 2) (\(I2 x y) -> I1 (x*y)) ys
-  let f' = replicate (Z_ ::. All_ ::. n) ys
-  let f = zip (reverse ys) ys
-  putStrLn $ test @UniformScheduleFun @NativeKernel $ program -- backpermute (Z_ ::. 5) (\x->x) (reverse ys)
-  print $ runN @Native $ program
+  -- let xs = fromList (Z :. 10) [1 :: Int ..]
+  -- let ys = map (+1) $ 
+  --           use xs
+  -- let f = map (*2)
+  -- let program = awhile (map (A.>0) . asnd) (\(T2 a b) -> T2 (f a) (map (\x -> x - 1) b)) (T2 ys $ unit $ constant (100000 :: Int))
+  -- -- let program xs = 
+  -- --   -- let xs = A.use (A.fromList (A.Z A.:. 10) ([0..] :: [Int])) in 
+  -- --       A.map fst $ A.zip (A.reverse xs) (A.reverse $ A.backpermute (A.I1 10) Prelude.id (xs :: A.Acc (A.Vector Int)))
+  -- -- -- let f = T2 (map (+1) ys) (map (*2) $ reverse ys)
+  -- -- -- let f = sum $ map (\(T2 a b) -> a + b) $ 
+  -- -- --          zip (reverse $ map (+1) (reverse ys)) $ reverse ys
+  -- let Z_ ::. n = shape ys
+  -- let f'' = backpermute (Z_ ::. 5 ::. 2) (\(I2 x y) -> I1 (x*y)) ys
+  -- let f' = replicate (Z_ ::. All_ ::. n) ys
+  -- let f = zip (reverse ys) ys
+  -- -- putStrLn $ test @UniformScheduleFun @NativeKernel $ program -- backpermute (Z_ ::. 5) (\x->x) (reverse ys)
+  -- -- print $ runN @Native program
+  -- print $ runN @Native f
+  -- let f = runN @Native program
+  -- -- let xs' = f xs
+  -- print $ f
+
+  -- waste time: If this takes long enough, the idle worker threads crash of boredom
+  let x :: Int -> Int
+      x i | i Prelude.>= 10000000 = 0
+      x i = x (i+1) + 1
+  print $ x 9
 
   -- putStrLn "generate:"
   -- let f = generate (I1 10) (\(I1 x0) -> 10 :: Exp Int)

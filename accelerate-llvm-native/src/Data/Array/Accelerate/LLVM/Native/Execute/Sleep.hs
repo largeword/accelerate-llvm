@@ -53,9 +53,11 @@ sleepIf (SleepScope ref) condition = do
     Waiting mvar -> do
       -- Some thread is already waiting
       c <- condition
-      if c then
+      if c then do
         -- Start waiting
         readMVar mvar
+
+        -- sleepIf (SleepScope ref) condition
       else
         -- Don't wait
         return ()
@@ -73,6 +75,8 @@ sleepIf (SleepScope ref) condition = do
         readMVar mvar
         -- readMVar is blocking until a value is available. All threads waiting
         -- will be woken when a value is written.
+
+        -- sleepIf (SleepScope ref) condition
       else
         -- Don't wait
         return ()

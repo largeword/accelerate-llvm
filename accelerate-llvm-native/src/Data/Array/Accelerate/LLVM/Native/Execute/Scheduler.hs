@@ -60,8 +60,16 @@ import Foreign.Ptr
 import Foreign.ForeignPtr
 
 import GHC.Base                                                     hiding ( build )
+import System.IO
 
 #include "MachDeps.h"
+
+instrumentedForkOn :: String -> Int -> IO () -> IO ThreadId
+instrumentedForkOn name i act =
+  forkOn i $
+    catch act $ \e ->
+      hPutStrLn stderr $ "[instrumentedForkIO] Thread '" ++ name ++ show i ++ "' crashed: " ++ show (e :: SomeException)
+
 
 newtype Job = Job { runJob :: ThreadIdx -> IO () }
 
@@ -176,7 +184,7 @@ hireWorkersOn caps = do
   activities <- newArray count Inactive
   let workers = Workers count sleep queue activities
   forM_ caps $ \cpu -> do
-    tid <- forkOn cpu $ do
+    tid <- instrumentedForkOn "worker" cpu $ do
             tid <- myThreadId
             -- Debug.init_thread
             -- withCString (printf "Thread %d" cpu) Debug.set_thread_name
