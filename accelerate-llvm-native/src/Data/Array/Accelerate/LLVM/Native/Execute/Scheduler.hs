@@ -85,6 +85,11 @@ data Workers = Workers
   -- won't duplicate that activity into this array.
   -- TODO: Should we add padding in this array to place each element in a different cache line?
   , workerActivity    :: {-# UNPACK #-} !(MutableArray RealWorld Activity)
+  -- To attach a (reliable) finalizer to Workers, we add an IORef.
+  -- Adding a finalizer to other objects is not reliable, and may cause that
+  -- the finalizer runs too early. Hence we attach the finalizer to an IORef.
+  -- https://hackage.haskell.org/package/base-4.19.1.0/docs/Data-IORef.html#v:mkWeakIORef
+  , workerIORef       :: {-# UNPACK #-} !(IORef ())
   }
 
 data Activity where
@@ -110,7 +115,7 @@ instance Show Activity where
 schedule :: Workers -> Job -> IO ()
 schedule workers job = do
   pushL (workerTaskQueue workers) job
-  wakeAll $ workerSleep workers
+  wakeAll (workerSleep workers) Work
 
 runWorker :: Workers -> ThreadIdx -> IO ()
 runWorker !workers !threadIdx = do
@@ -118,8 +123,10 @@ runWorker !workers !threadIdx = do
 
 tryRunWork :: Workers -> ThreadIdx -> Int16 -> IO ()
 tryRunWork !workers !threadIdx 16 = do
-  sleepIf (workerSleep workers) ({- Last check before sleeping -} noWork workers)
-  runWorker workers threadIdx
+  reason <- sleepIf (workerSleep workers) ({- Last check before sleeping -} noWork workers)
+  case reason of
+    Work -> runWorker workers threadIdx
+    Exit -> return ()
 tryRunWork !workers !threadIdx !retries = do
   mjob <- tryDequeue workers
   case mjob of
@@ -182,7 +189,9 @@ hireWorkersOn caps = do
   queue <- newQ
   let count = length caps
   activities <- newArray count Inactive
-  let workers = Workers count sleep queue activities
+  ioref <- newIORef ()
+  _ <- mkWeakIORef ioref $ wakeAll sleep Exit
+  let workers = Workers count sleep queue activities ioref
   forM_ caps $ \cpu -> do
     tid <- instrumentedForkOn "worker" cpu $ do
             tid <- myThreadId
@@ -270,7 +279,7 @@ resolveSignal !workers (NativeSignal ioref) = do
 executeKernel :: forall env. Workers -> ThreadIdx -> KernelCall env -> Job -> IO ()
 executeKernel !workers !myIdx (KernelCall fun arg) continuation = do
   writeArray (workerActivity workers) myIdx $ Active @env Proxy fun arg continuation
-  wakeAll $ workerSleep workers
+  wakeAll (workerSleep workers) Work
   helpKernel workers myIdx myIdx (return ()) (return ())
 
 {-# INLINE helpKernel #-}
