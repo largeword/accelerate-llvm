@@ -17,7 +17,7 @@
 --
 
 module Data.Array.Accelerate.LLVM.Native.Execute.Sleep
-  ( SleepScope, newSleepScope, sleepIf, wakeAll
+  ( SleepScope, newSleepScope, sleepIf, wakeAll, exitAll
   , WakeReason(..)
   ) where
 
@@ -26,6 +26,9 @@ import Data.IORef
 import Control.Monad
 import Control.Concurrent.MVar
 import Control.Concurrent
+import Control.Exception
+import Data.Array.Accelerate.Error
+
 newtype SleepScope = SleepScope (IORef State)
 
 newSleepScope :: IO SleepScope
@@ -40,8 +43,10 @@ data State
   -- All threads are busy. The MVar is currently not used (and is empty).
   -- It will be used when the state changes to waiting.
   | Busy    {-# UNPACK #-} !(MVar WakeReason)
+  -- All work is done. The worker threads should exit.
+  | Done
 
-data WakeReason = Work | Exit
+data WakeReason = Work | Exit deriving Show
 
 -- Invariants:
 --   * If the state is Waiting, then 'sleepIf' will not write to the state.
@@ -51,43 +56,38 @@ data WakeReason = Work | Exit
 
 sleepIf :: SleepScope -> IO (Bool) -> IO WakeReason
 sleepIf (SleepScope ref) condition = do
-  threadDelay 1000000
-  return Work
-  -- ticket <- readForCAS ref
-  -- case peekTicket ticket of
-  --   Waiting mvar -> do
-  --     -- Some thread is already waiting
-  --     c <- condition
-  --     if c then do
-  --       -- Start waiting
-  --       readMVar mvar
+  ticket <- readForCAS ref
+  case peekTicket ticket of
+    Waiting mvar -> do
+      -- Some thread is already waiting
+      c <- condition
+      if c then
+        -- Start waiting
+        readMVar mvar `catch` (\(_ :: SomeException) -> return Exit)
+      else
+        -- Don't wait
+        return Work
+    Busy mvar -> do
+      -- No thread is waiting yet
+      c <- condition
+      if c then do
+        -- Change state to waiting
+        _ <- casIORef ref ticket (Waiting mvar)
+        -- If the CAS fails, then some other thread has written 'Waiting mvar'
+        -- to the IORef. We thus can proceed without retrying.
+        -- A CAS is needed, compared to a normal write, as this function can be
+        -- interleaved by other threads doing 'sleepIf' and 'wakeAll'.
+        -- Start waiting
+        readMVar mvar `catch` (\(_ :: SomeException) -> return Exit)
+        -- readMVar is blocking until a value is available. All threads waiting
+        -- will be woken when a value is written.
+      else
+        -- Don't wait
+        return Work
+    Done -> return Exit
 
-  --       -- sleepIf (SleepScope ref) condition
-  --     else
-  --       -- Don't wait
-  --       return Work
-  --   Busy mvar -> do
-  --     -- No thread is waiting yet
-  --     c <- condition
-  --     if c then do
-  --       -- Change state to waiting
-  --       _ <- casIORef ref ticket (Waiting mvar)
-  --       -- If the CAS fails, then some other thread has written 'Waiting mvar'
-  --       -- to the IORef. We thus can proceed without retrying.
-  --       -- A CAS is needed, compared to a normal write, as this function can be
-  --       -- interleaved by other threads doing 'sleepIf' and 'wakeAll'.
-  --       -- Start waiting
-  --       readMVar mvar
-  --       -- readMVar is blocking until a value is available. All threads waiting
-  --       -- will be woken when a value is written.
-
-  --       -- sleepIf (SleepScope ref) condition
-  --     else
-  --       -- Don't wait
-  --       return Work
-
-wakeAll :: SleepScope -> WakeReason -> IO ()
-wakeAll (SleepScope ref) reason = do
+wakeAll :: SleepScope -> IO ()
+wakeAll (SleepScope ref) = do
   ticket <- readForCAS ref
   case peekTicket ticket of
     -- No need to wake anyone!
@@ -101,5 +101,26 @@ wakeAll (SleepScope ref) reason = do
       -- interleaved by other threads doing 'wakeAll' and 'sleepIf'.
 
       -- Wake all threads
-      when success $ putMVar mvar reason
+      when success $ putMVar mvar Work
+    Done -> internalError "Cannot wake threads after exit" -- Should be impossible
+
+exitAll :: SleepScope -> IO ()
+exitAll (SleepScope ref) = do
+  ticket <- readForCAS ref
+  case peekTicket ticket of
+    Busy _ -> do
+      print "exitAll busy"
+      (success, _) <- casIORef ref ticket Done
+      print success
+      unless success $ exitAll (SleepScope ref)
+    Waiting mvar -> do
+      print "exitAll waiting"
+      new <- newEmptyMVar
+      (success, _) <- casIORef ref ticket Done
+      print success
+      if success then
+        putMVar mvar Exit
+      else
+        exitAll (SleepScope ref)
+    Done -> print "exitAll done" -- return ()
 
