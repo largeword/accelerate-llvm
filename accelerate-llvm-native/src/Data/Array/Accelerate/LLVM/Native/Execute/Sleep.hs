@@ -25,7 +25,7 @@ import Data.Atomics
 import Data.IORef
 import Control.Monad
 import Control.Concurrent.MVar
-
+import Control.Concurrent
 newtype SleepScope = SleepScope (IORef State)
 
 newSleepScope :: IO SleepScope
@@ -51,38 +51,40 @@ data WakeReason = Work | Exit
 
 sleepIf :: SleepScope -> IO (Bool) -> IO WakeReason
 sleepIf (SleepScope ref) condition = do
-  ticket <- readForCAS ref
-  case peekTicket ticket of
-    Waiting mvar -> do
-      -- Some thread is already waiting
-      c <- condition
-      if c then do
-        -- Start waiting
-        readMVar mvar
+  threadDelay 1000000
+  return Work
+  -- ticket <- readForCAS ref
+  -- case peekTicket ticket of
+  --   Waiting mvar -> do
+  --     -- Some thread is already waiting
+  --     c <- condition
+  --     if c then do
+  --       -- Start waiting
+  --       readMVar mvar
 
-        -- sleepIf (SleepScope ref) condition
-      else
-        -- Don't wait
-        return Work
-    Busy mvar -> do
-      -- No thread is waiting yet
-      c <- condition
-      if c then do
-        -- Change state to waiting
-        _ <- casIORef ref ticket (Waiting mvar)
-        -- If the CAS fails, then some other thread has written 'Waiting mvar'
-        -- to the IORef. We thus can proceed without retrying.
-        -- A CAS is needed, compared to a normal write, as this function can be
-        -- interleaved by other threads doing 'sleepIf' and 'wakeAll'.
-        -- Start waiting
-        readMVar mvar
-        -- readMVar is blocking until a value is available. All threads waiting
-        -- will be woken when a value is written.
+  --       -- sleepIf (SleepScope ref) condition
+  --     else
+  --       -- Don't wait
+  --       return Work
+  --   Busy mvar -> do
+  --     -- No thread is waiting yet
+  --     c <- condition
+  --     if c then do
+  --       -- Change state to waiting
+  --       _ <- casIORef ref ticket (Waiting mvar)
+  --       -- If the CAS fails, then some other thread has written 'Waiting mvar'
+  --       -- to the IORef. We thus can proceed without retrying.
+  --       -- A CAS is needed, compared to a normal write, as this function can be
+  --       -- interleaved by other threads doing 'sleepIf' and 'wakeAll'.
+  --       -- Start waiting
+  --       readMVar mvar
+  --       -- readMVar is blocking until a value is available. All threads waiting
+  --       -- will be woken when a value is written.
 
-        -- sleepIf (SleepScope ref) condition
-      else
-        -- Don't wait
-        return Work
+  --       -- sleepIf (SleepScope ref) condition
+  --     else
+  --       -- Don't wait
+  --       return Work
 
 wakeAll :: SleepScope -> WakeReason -> IO ()
 wakeAll (SleepScope ref) reason = do

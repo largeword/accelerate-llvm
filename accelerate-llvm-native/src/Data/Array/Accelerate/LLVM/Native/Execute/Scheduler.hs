@@ -298,7 +298,7 @@ helpKernel !workers !myIdx !otherIdx !whenInactive !afterActive = do
       -- this function, with a variant for helping threads and one for the starting
       -- thread, then we could avoid the CAS in the latter.
       _ <- casArrayElem (workerActivity workers) otherIdx ticket Inactive
-
+      
       when isLast (runJob continuation myIdx)
       afterActive
 

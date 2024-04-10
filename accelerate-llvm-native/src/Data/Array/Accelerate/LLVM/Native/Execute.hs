@@ -53,6 +53,12 @@ import Control.Monad
 import Control.Concurrent
 import Control.Concurrent.MVar
 
+import System.IO
+
+-- change for debugging schedule execution
+don't :: IO a -> IO ()
+don't f = return ()
+
 
 instance Execute UniformScheduleFun NativeKernel where
   executeAfunSchedule tp fun = runValuesIOFun workers tp $ scheduleScheduleFun workers Empty fun
@@ -101,9 +107,13 @@ executeSchedule !workers !threadIdx !env = \case
   Awhile io step input next -> do
     executeAwhile workers threadIdx env io step (prjVars input env) next
   Spawn (Effect (SignalAwait signals) a) b -> do
-    scheduleAfter workers (map (`prj` env) signals) $ Job $ \threadIdx' -> executeSchedule workers threadIdx' env a
+    don't $ hPutStr stderr $ show $ ("spawnwait",length signals)
+    scheduleAfter workers (map (`prj` env) signals) $ Job $ \threadIdx' -> do
+      don't $ hPutStr stderr (show ("spawnwaited", length signals))
+      executeSchedule workers threadIdx' env a
     executeSchedule workers threadIdx env b
   Spawn a b -> do
+    don't $ hPutStr stderr $ show $ ("spawn")
     schedule workers $ Job $ \threadIdx' -> executeSchedule workers threadIdx' env a
     executeSchedule workers threadIdx env b
 
@@ -135,14 +145,22 @@ executeBinding workers !env tp = \case
 executeEffect :: forall env. Workers -> ThreadIdx -> NativeEnv env -> Effect NativeKernel env -> Job -> IO ()
 executeEffect !workers !threadIdx !env !effect !next = case effect of
   Exec md kernelFun args -> do
+    don't $ hPutStr stderr $ show md
     Exists kernelCall <- prepareKernel env md kernelFun args
     executeKernel workers threadIdx kernelCall (Job $ \threadIdx' -> touchKernel env kernelFun args >> runJob next threadIdx)
-  SignalAwait signals -> 
-    scheduleAfterOrRun (map (`prj` env) signals) threadIdx $ next
+  SignalAwait signals -> do
+    don't $ hPutStr stderr $ show $ ("wait",length signals)
+--    scheduleAfterOrRun (map (`prj` env) signals) threadIdx $ next
+    let Job f = next
+    let f' tid = don't (hPutStr stderr (show ("waited", length signals))) >> f tid
+    let next' = Job f'
+    scheduleAfter workers (map (`prj` env) signals) $ next'
   SignalResolve signals -> do
+    don't $ hPutStr stderr "resolved!!!!"
     mapM_ resolve signals
     runJob next threadIdx
   RefWrite ref@(Var (BaseRrefWrite tp) _) valueVar -> do
+    don't $ hPutStr stderr $ ("refwrite")
     let OutputRef ioref = prj (varIdx ref) env
     let value = prjGroundVar (Var tp $ varIdx valueVar) env
     writeIORef ioref value

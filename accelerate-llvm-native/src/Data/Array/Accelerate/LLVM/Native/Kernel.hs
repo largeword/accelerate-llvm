@@ -72,6 +72,7 @@ instance NFData' NativeKernel where
 
 newtype NativeKernelMetadata f =
   NativeKernelMetadata { kernelArgsSize :: Int }
+    deriving Show
 
 instance NFData' NativeKernelMetadata where
   rnf' (NativeKernelMetadata sz) = rnf sz

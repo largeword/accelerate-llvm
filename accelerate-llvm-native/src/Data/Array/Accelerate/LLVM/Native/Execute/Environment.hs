@@ -39,6 +39,22 @@ import System.IO.Unsafe
 import Control.Concurrent
 import Control.Concurrent.MVar
 
+
+
+
+poorReadMVar :: MVar a -> IO a
+poorReadMVar mvar = do
+  value <- tryReadMVar mvar
+  case value 
+    of
+    Just a -> return a
+    Nothing -> 
+      do
+      threadDelay 100000
+      poorReadMVar mvar
+
+
+
 type family ValueR e where
   ValueR Signal         = NativeSignal
   ValueR SignalResolver = NativeSignal
@@ -81,7 +97,7 @@ values workers (TupRsingle tp)  v        = case tp of
   BaseRsignal
     | Signal mvar <- v -> unsafePerformIO $ do
       signal <- newSignal
-      _ <- forkIO (readMVar mvar >> resolveSignal workers signal)
+      _ <- forkIO (readMVar mvar >> resolveSignal workers signal) -- NIET DEZE
       return $ ValuesSingle $ Value signal
   BaseRsignalResolver
     | SignalResolver mvar <- v -> unsafePerformIO $ do
