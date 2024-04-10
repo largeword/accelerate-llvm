@@ -121,7 +121,7 @@ executeBinding :: Workers -> NativeEnv env -> BasesR t -> Binding env t -> IO (V
 executeBinding workers !env tp = \case
   Compute expr ->
     return $ values workers tp $ evalExp expr $ evalArrayInstr env
-  NewSignal -> do
+  NewSignal _ -> do
     signal <- newSignal
     return $ ValuesSingle (Value signal) `ValuesPair` ValuesSingle (Value signal)
   NewRef _ -> do
