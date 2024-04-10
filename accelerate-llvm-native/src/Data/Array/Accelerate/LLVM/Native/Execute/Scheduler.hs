@@ -107,7 +107,7 @@ instance Show Activity where
 schedule :: Workers -> Job -> IO ()
 schedule workers job = do
   pushL (workerTaskQueue workers) job
-  wakeAll (workerSleep workers) Work
+  wakeAll $ workerSleep workers
 
 runWorker :: Workers -> ThreadIdx -> IO ()
 runWorker !workers !threadIdx = do
@@ -182,7 +182,7 @@ hireWorkersOn caps = do
   let count = length caps
   activities <- newArray count Inactive
   ioref <- newIORef ()
-  _ <- mkWeakIORef ioref $ wakeAll sleep Exit
+  _ <- mkWeakIORef ioref $ exitAll sleep
   let workers = Workers count sleep queue activities ioref
   forM_ caps $ \cpu -> do
     tid <- forkOn cpu $ do
@@ -271,7 +271,7 @@ resolveSignal !workers (NativeSignal ioref) = do
 executeKernel :: forall env. Workers -> ThreadIdx -> KernelCall env -> Job -> IO ()
 executeKernel !workers !myIdx (KernelCall fun arg) continuation = do
   writeArray (workerActivity workers) myIdx $ Active @env Proxy fun arg continuation
-  wakeAll (workerSleep workers) Work
+  wakeAll $ workerSleep workers
   helpKernel workers myIdx myIdx (return ()) (return ())
 
 {-# INLINE helpKernel #-}
