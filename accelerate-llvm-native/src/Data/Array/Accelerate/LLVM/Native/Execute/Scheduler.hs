@@ -46,6 +46,7 @@ import Control.Concurrent.Extra
 import Control.DeepSeq
 import Control.Exception
 import Control.Monad
+import System.Environment
 import System.IO.Unsafe
 import Data.Proxy
 import Data.Atomics
@@ -54,12 +55,15 @@ import Data.Concurrent.Queue.MichaelScott
 import Data.IORef
 import Data.Int
 import Data.Sequence                                                ( Seq )
+import Data.Maybe
+import Text.Read (readMaybe)
 import Formatting
 import qualified Data.Sequence                                      as Seq
 import Foreign.Ptr
 import Foreign.ForeignPtr
 
 import GHC.Base                                                     hiding ( build )
+import GHC.Conc
 
 #include "MachDeps.h"
 
@@ -169,8 +173,13 @@ tryDequeue !workers = tryPopR (workerTaskQueue workers)
 --
 hireWorkers :: IO Workers
 hireWorkers = do
-  ncpu    <- getNumCapabilities
-  workers <- hireWorkersOn [0 .. ncpu-1]
+  nproc <- getNumProcessors
+  ncaps <- getNumCapabilities
+  menv  <- (readMaybe =<<) <$> lookupEnv "ACCELERATE_LLVM_NATIVE_THREADS"
+
+  let nthreads = fromMaybe nproc menv
+
+  workers <- hireWorkersOn [0 .. nthreads-1]
   return workers
 
 -- Spawn worker threads on the specified capabilities
