@@ -109,18 +109,14 @@ exitAll (SleepScope ref) = do
   ticket <- readForCAS ref
   case peekTicket ticket of
     Busy _ -> do
-      print "exitAll busy"
       (success, _) <- casIORef ref ticket Done
-      print success
       unless success $ exitAll (SleepScope ref)
     Waiting mvar -> do
-      print "exitAll waiting"
       new <- newEmptyMVar
       (success, _) <- casIORef ref ticket Done
-      print success
       if success then
         putMVar mvar Exit
       else
         exitAll (SleepScope ref)
-    Done -> print "exitAll done" -- return ()
+    Done -> return ()
 
