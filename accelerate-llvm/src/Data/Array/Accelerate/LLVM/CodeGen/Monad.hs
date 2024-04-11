@@ -120,12 +120,11 @@ liftCodeGen = CodeGen . lift
 
 codeGenFunction
   :: forall arch f. (HasCallStack, Target arch, Intrinsic arch, Result f ~ Bool)
-  => UID
-  -> Label
+  => ShortByteString
   -> (GlobalFunctionDefinition Bool -> GlobalFunctionDefinition f)
   -> CodeGen arch ()
   -> LLVM arch (Module f)
-codeGenFunction uid name bind body = do
+codeGenFunction name bind body = do
   -- Execute the CodeGen monad and retrieve the code of the function and final state.
   (code, st) <- runStateT
     ( runCodeGen $ do
@@ -147,20 +146,16 @@ codeGenFunction uid name bind body = do
         }
   
   let
-    fullName = name <> fromString ('_' : show uid)
-    fullName'
-      | Label s <- fullName = s
-      | otherwise = "<undefined>"
     typeDefs = map (\(n,t) -> LLVM.TypeDefinition (downcast n) t) $ HashMap.toList $ typedefTable st
     symbols = map LLVM.GlobalDefinition $ HashMap.elems $ symbolTable st
     metadata = createMetadata $ metadataTable st
 
   return $ Module
-    { moduleName             = fullName'
+    { moduleName             = name
     , moduleSourceFileName   = B.empty
     , moduleDataLayout       = targetDataLayout @arch
     , moduleTargetTriple     = targetTriple @arch
-    , moduleMain             = bind $ Body (PrimType BoolPrimType) Nothing (GlobalFunctionBody fullName code)
+    , moduleMain             = bind $ Body (PrimType BoolPrimType) Nothing (GlobalFunctionBody (Label name) code)
     , moduleOtherDefinitions = typeDefs ++ symbols ++ metadata
     }
 
