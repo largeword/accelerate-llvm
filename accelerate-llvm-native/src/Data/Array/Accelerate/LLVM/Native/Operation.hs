@@ -345,6 +345,7 @@ instance StaticClusterAnalysis NativeOp where
   shToVar      = bcan2id
   shrinkOrGrow = bcan2id
   addTup       = bcan2id
+  inToVar = bcan2id
   -- onOp propagates the backpermute information from the outputs to the inputs of each operation
   onOp NMap (bp :>: ArgsNil) _ _ = BCAN2 Nothing undefined :>: bcan2id bp :>: bp :>: ArgsNil
   onOp NBackpermute (BCAN2 (Just bp@(BP shr1 shr2 g sh)) d :>: ArgsNil) (ArgFun f :>: ArgArray In (ArrayR shrI _) _ _ :>: ArgArray Out (ArrayR shrO _) _ _ :>: ArgsNil) _

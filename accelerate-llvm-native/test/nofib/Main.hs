@@ -29,26 +29,20 @@ import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solve
 import Data.Array.Accelerate.Data.Bits
 import Data.Array.Accelerate.Unsafe
 import Control.Concurrent
-
+import Quickhull
 main :: IO ()
 main = do
-  let x = A.runN @Native $ A.zipWith (+) (A.use $ A.fromList (Z:.10) [1::Int ..]) (A.use $ A.fromList (Z:.10) [0..])
-  print x 
-  putStrLn "hi"
-  threadDelay 10000000
-  putStrLn "bye"
-
-  -- let xs = fromList (Z :. 10) [1 :: Int ..]
-  -- let ys = map (+1) $ 
-  --           use xs
-  -- let f = map (*2)
-  -- let program = awhile (map (A.>0) . asnd) (\(T2 a b) -> T2 (f a) (map (\x -> x - 1) b)) (T2 ys $ unit $ constant (100000 :: Int))
-  -- -- let program xs = 
-  -- --   -- let xs = A.use (A.fromList (A.Z A.:. 10) ([0..] :: [Int])) in 
-  -- --       A.map fst $ A.zip (A.reverse xs) (A.reverse $ A.backpermute (A.I1 10) Prelude.id (xs :: A.Acc (A.Vector Int)))
-  -- -- -- let f = T2 (map (+1) ys) (map (*2) $ reverse ys)
-  -- -- -- let f = sum $ map (\(T2 a b) -> a + b) $ 
-  -- -- --          zip (reverse $ map (+1) (reverse ys)) $ reverse ys
+  let xs = fromList (Z :. 10) [1 :: Int ..]
+  let ys = map (+1) $ 
+            use xs
+  let f = map (*2)
+  let program = awhile (map (A.>0) . asnd) (\(T2 a b) -> T2 (f a) (map (\x -> x - 1) b)) (T2 ys $ unit $ constant (100000 :: Int))
+  -- let program xs = 
+  --   -- let xs = A.use (A.fromList (A.Z A.:. 10) ([0..] :: [Int])) in 
+  --       A.map fst $ A.zip (A.reverse xs) (A.reverse $ A.backpermute (A.I1 10) Prelude.id (xs :: A.Acc (A.Vector Int)))
+  -- -- let f = T2 (map (+1) ys) (map (*2) $ reverse ys)
+  -- -- let f = sum $ map (\(T2 a b) -> a + b) $ 
+  -- --          zip (reverse $ map (+1) (reverse ys)) $ reverse ys
   -- let Z_ ::. n = shape ys
   -- let f'' = backpermute (Z_ ::. 5 ::. 2) (\(I2 x y) -> I1 (x*y)) ys
   -- let f' = replicate (Z_ ::. All_ ::. n) ys
@@ -59,12 +53,6 @@ main = do
   -- let f = runN @Native program
   -- -- let xs' = f xs
   -- print $ f
-
-  -- waste time: If this takes long enough, the idle worker threads crash of boredom
-  let x :: Int -> Int
-      x i | i Prelude.>= 10000000 = 0
-      x i = x (i+1) + 1
-  print $ x 9
 
   -- putStrLn "generate:"
   -- let f = generate (I1 10) (\(I1 x0) -> 10 :: Exp Int)
@@ -87,6 +75,13 @@ main = do
   -- let f = scanl1 (+) ys
   -- -- putStrLn $ test @UniformScheduleFun @NativeKernel f
   -- print $ run @Native f
+
+  putStrLn "mapscanmap:"
+  let f = map (*2) $ scanl1 (+) $ map (+4) ys
+  putStrLn $ test @UniformScheduleFun @NativeKernel f
+  print $ run @Native f
+
+  
  
   -- Prelude.print $ runNWithObj @Native ArrayReadsWrites $ quicksort $ use $ fromList (Z :. 5) [100::Int, 200, 3, 5, 4]
  

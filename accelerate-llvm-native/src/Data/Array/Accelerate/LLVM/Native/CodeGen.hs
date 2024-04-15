@@ -2,6 +2,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs             #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -33,6 +34,7 @@ module Data.Array.Accelerate.LLVM.Native.CodeGen
   where
 
 -- accelerate
+import Data.Array.Accelerate.Trafo.Operation.LiveVars
 import Data.Array.Accelerate.Representation.Array
 import Data.Array.Accelerate.Representation.Shape (shapeType, ShapeR(..), rank)
 import Data.Array.Accelerate.Representation.Type
@@ -481,11 +483,12 @@ instance (StaticClusterAnalysis op, EnvF (JustAccumulator op) ~ EnvF op) => Stat
 
 deriving instance (Eq (BackendClusterArg2 op x y)) => Eq (BackendClusterArg2 (JustAccumulator op) x y)
 deriving instance (Show (BackendClusterArg2 op x y)) => Show (BackendClusterArg2 (JustAccumulator op) x y)
+deriving instance (ShrinkArg (BackendClusterArg op)) => ShrinkArg (BackendClusterArg (JustAccumulator op))
 
 
 toOnlyAcc :: Cluster op args -> Cluster (JustAccumulator op) args
 toOnlyAcc (Fused f l r) = Fused f (toOnlyAcc l) (toOnlyAcc r)
-toOnlyAcc (Op (SOp (SOAOp op soa) sort) l) = Op (SOp (SOAOp (JA op) soa) sort) l
+toOnlyAcc (Op (SLV (SOp (SOAOp op soa) sort) subargs) l) = Op (SLV (SOp (SOAOp (JA op) soa) sort) subargs) l
 
 pattern CJ :: f a -> Compose Maybe f a
 pattern CJ x = Compose (Just x)
