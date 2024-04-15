@@ -70,6 +70,7 @@ import Data.Array.Accelerate.AST.Operation (groundToExpVar, Fun, mapArgs)
 import Data.Array.Accelerate.LLVM.Native.CodeGen.Permute (atomically)
 import Control.Monad.State (StateT(..), lift, evalStateT, execStateT)
 import qualified Data.Map as M
+import Data.ByteString.Short ( ShortByteString )
 import Data.Array.Accelerate.AST.LeftHandSide (Exists (Exists), lhsToTupR)
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels (Label)
 import Data.Array.Accelerate.LLVM.CodeGen.Constant (constant, boolean)
@@ -88,13 +89,13 @@ import Data.Array.Accelerate.Backend (SLVOperation(..))
 
 
 
-codegen :: UID
+codegen :: ShortByteString
         -> Env AccessGroundR env
         -> Clustered NativeOp args
         -> Args env args
         -> LLVM Native (Module (KernelType env))
-codegen uid env (Clustered c b) args = 
-  codeGenFunction uid "fused_cluster_name" (LLVM.Lam argTp "arg") $ do
+codegen name env (Clustered c b) args = 
+  codeGenFunction name (LLVM.Lam argTp "arg") $ do
     extractEnv
     workstealLoop workstealIndex workstealActiveThreads (op scalarTypeInt32 $ constant (TupRsingle scalarTypeInt32) 1) $ \_ -> do
       let b' = mapArgs BCAJA b

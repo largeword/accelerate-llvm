@@ -65,8 +65,8 @@ data ObjectR f = ObjectR
   , sharedObjPath :: {- LAZY -} FilePath
   }
 
-compile :: UID -> Module f -> LLVM Native (ObjectR f)
-compile uid module' = do
+compile :: UID -> ShortByteString -> Module f -> LLVM Native (ObjectR f)
+compile uid name module' = do
   cachePath <- cacheOfUID uid
   let
     ast = downcast module'
@@ -74,7 +74,6 @@ compile uid module' = do
     sharedObjFile = cachePath <.> sharedObjExt
     triple        = fromMaybe BS.empty (LLVM.moduleTargetTriple ast)
     datalayout    = LLVM.moduleDataLayout ast
-    GlobalFunctionBody (Label name) _ = functionBody $ moduleMain module'
   -- Lower the generated LLVM and produce an object file.
   --
   -- The 'staticObjPath' field is only lazily evaluated since the object

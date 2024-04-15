@@ -1,5 +1,6 @@
 {-# LANGUAGE GADTs             #-}
 {-# LANGUAGE BangPatterns      #-}
+{-# LANGUAGE LambdaCase        #-}
 {-# LANGUAGE TypeFamilies      #-}
 {-# LANGUAGE TypeOperators     #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -29,6 +30,7 @@ import Data.Array.Accelerate.Type
 import Data.Array.Accelerate.AST.Exp
 import Data.Array.Accelerate.AST.Var
 import Data.Array.Accelerate.AST.Kernel
+import Data.Array.Accelerate.AST.Schedule
 import Data.Array.Accelerate.AST.Schedule.Uniform
 import Data.Array.Accelerate.Backend
 import Data.Array.Accelerate.Error
@@ -48,7 +50,8 @@ import Data.Array.Accelerate.LLVM.Native.CodeGen.Base
 import Data.Array.Accelerate.LLVM.Native.Execute.Marshal
 import qualified LLVM.AST                                           as LLVM
 import LLVM.AST.Type.Function
-import Data.ByteString.Short                                        ( ShortByteString )
+import Data.ByteString.Short                                        ( ShortByteString, fromShort )
+import qualified Data.ByteString.Char8 as Char8
 import System.FilePath                                              ( FilePath, (<.>) )
 import System.IO.Unsafe
 import Control.DeepSeq
@@ -62,13 +65,15 @@ import LLVM.AST.Type.Representation
 
 data NativeKernel env where
   NativeKernel
-    :: { kernelId       :: {-# UNPACK #-} !UID
-       , kernelFunction :: !(Lifetime (FunPtr (KernelType env)))
+    :: { kernelFunction   :: !(Lifetime (FunPtr (KernelType env)))
+       , kernelId         :: {-# UNPACK #-} !ShortByteString
+       , kernelDescDetail :: String
+       , kernelDescBrief  :: String
        }
     -> NativeKernel env
 
 instance NFData' NativeKernel where
-  rnf' (NativeKernel !_ fn) = unsafeGetValue fn `seq` ()
+  rnf' (NativeKernel fn !_ s l) = unsafeGetValue fn `seq` rnf s `seq` rnf l
 
 newtype NativeKernelMetadata f =
   NativeKernelMetadata { kernelArgsSize :: Int }
@@ -82,11 +87,13 @@ instance IsKernel NativeKernel where
   type KernelMetadata  NativeKernel = NativeKernelMetadata
 
   compileKernel env cluster args = unsafePerformIO $ evalLLVM defaultTarget $ do
-    module' <- codegen uid env cluster args
-    obj <- compile uid module'
+    module' <- codegen fullName env cluster args
+    obj <- compile uid fullName module'
     funPtr <- link obj
-    return $ NativeKernel uid funPtr
+    return $ NativeKernel funPtr fullName detail brief
     where
+      (name, detail, brief) = generateKernelNameAndDescription operationName cluster
+      fullName = fromString $ name ++ "-" ++ show uid
       uid = hashOperation cluster args
 
   kernelMetadata kernel = NativeKernelMetadata $ sizeOfEnv kernel
@@ -96,4 +103,23 @@ instance PrettyKernel NativeKernel where
     where
       go :: OpenKernelFun NativeKernel env t -> Adoc
       go (KernelFunLam _ f) = go f
-      go (KernelFunBody kernel) = fromString $ take 16 $ show $ kernelId kernel
+      go (KernelFunBody (NativeKernel _ name "" _))
+        = fromString $ take 32 $ toString name
+      go (KernelFunBody (NativeKernel _ name detail brief))
+        = fromString (take 32 $ toString name)
+        <+> flatAlt (group $ line' <> "-- " <> desc)
+          ("{- " <> desc <> "-}")
+        where desc = group $ flatAlt (fromString brief) (fromString detail)
+
+      toString :: ShortByteString -> String
+      toString = Char8.unpack . fromShort
+
+operationName :: NativeOp t -> (Int, String, String)
+operationName = \case
+  NMap         -> (2, "map", "maps")
+  NBackpermute -> (1, "backpermute", "backpermutes")
+  NGenerate    -> (2, "generate", "generates")
+  NPermute     -> (5, "permute", "permutes")
+  NScanl1      -> (4, "scan", "scans")
+  NFold1       -> (3, "fold", "folds")
+  NFold2       -> (3, "fold", "folds")
