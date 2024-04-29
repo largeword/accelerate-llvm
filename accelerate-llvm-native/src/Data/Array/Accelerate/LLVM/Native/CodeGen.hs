@@ -85,6 +85,7 @@ import qualified Debug.Trace
 import Formatting.ShortFormatters (o)
 import Data.Array.Accelerate (SLVOperation)
 import Data.Array.Accelerate.Backend (SLVOperation(..))
+import Data.Array.Accelerate.LLVM.CodeGen.IR
 
 
 
@@ -217,6 +218,9 @@ instance EvalOp NativeOp where
   type Index NativeOp = (Int, Operands Int, [Operands Int])
   type Embed' NativeOp = Compose Maybe Operands
   type EnvF NativeOp = GroundOperand
+
+  embed (GroundOperandParam  x) = Compose $ Just $ ir' x
+  embed (GroundOperandBuffer x) = error "does this ever happen?"
 
   unit = Compose $ Just OP_Unit
 
