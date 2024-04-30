@@ -253,6 +253,16 @@ instance EvalOp NativeOp where
       i <- intOfIndex shr2 sh' sh2
       readBuffer tp TypeInt (aprjBuffer (unsafeCoerce buf) gamma) (op TypeInt i)
     | otherwise = pure CN
+  readInput tp _ (TupRsingle buf) gamma a (_,i,_) = -- assuming no bp, and I'll just make a read at every depth?
+    -- lift $ CJ . ir tp <$> readBuffer tp TypeInt (aprjBuffer (unsafeCoerce buf) gamma) (op TypeInt i)
+    -- second attempt, the above segfaults: never read instead
+    pure CN
+    -- also segfaults :(
+    {- weird: this implies that a is a `IsUnit`, but it happens on Int
+    error $ show tp <> case buf of
+    TupRsingle _ -> "single"
+    TupRpair _ _ -> "pair"
+    TupRunit -> "unit" -}
   readInput _ _ _ _ _ _ = error "not single"
 
   evalOp  :: (Int, Operands Int, [Operands Int])
@@ -422,6 +432,7 @@ instance EvalOp (JustAccumulator NativeOp) where
   subtup (SubTupRpair a b) (TupRpair x y) = TupRpair (subtup @(JustAccumulator NativeOp) a x) (subtup @(JustAccumulator NativeOp) b y)
   subtup _ _ = error "subtup-pair with non-pair TypeR"
 
+  readInput ty sh _ gamma (BCA2JA IsUnit) _ = pure TupRunit
   readInput ty sh _ gamma (BCA2JA (BCAN2 Nothing  d)) _ = StateT $ \(acc,ls) -> pure (TupRsingle ty, (acc, merge ls sh gamma))
   readInput ty sh _ gamma (BCA2JA (BCAN2 (Just (BP _ _ _ ls')) d)) _ = StateT $ \(acc,ls) -> pure (TupRsingle ty, (acc, merge ls ls' gamma))
 
@@ -480,11 +491,11 @@ instance (StaticClusterAnalysis op, EnvF (JustAccumulator op) ~ EnvF op) => Stat
   varToValue   x = coerce @(BackendClusterArg2 op _ _) @(BackendClusterArg2 (JustAccumulator op) _ _) $ varToValue $ coerce x
   varToSh      x = coerce @(BackendClusterArg2 op _ _) @(BackendClusterArg2 (JustAccumulator op) _ _) $ varToSh $ coerce x
   shToVar      x = coerce @(BackendClusterArg2 op _ _) @(BackendClusterArg2 (JustAccumulator op) _ _) $ shToVar $ coerce x
-  shrinkOrGrow x = coerce @(BackendClusterArg2 op _ _) @(BackendClusterArg2 (JustAccumulator op) _ _) $ shrinkOrGrow $ coerce x
+  shrinkOrGrow a b x = coerce @(BackendClusterArg2 op _ _) @(BackendClusterArg2 (JustAccumulator op) _ _) $ shrinkOrGrow a b $ coerce x
   addTup       x = coerce @(BackendClusterArg2 op _ _) @(BackendClusterArg2 (JustAccumulator op) _ _) $ addTup $ coerce x
   unitToVar    x = coerce @(BackendClusterArg2 op _ _) @(BackendClusterArg2 (JustAccumulator op) _ _) $ unitToVar $ coerce x
   varToUnit    x = coerce @(BackendClusterArg2 op _ _) @(BackendClusterArg2 (JustAccumulator op) _ _) $ varToUnit $ coerce x
-  pairinfo x y = coerce @(BackendClusterArg2 op _ _) @(BackendClusterArg2 (JustAccumulator op) _ _) $ pairinfo (coerce x) (coerce y)
+  pairinfo a x y = coerce @(BackendClusterArg2 op _ _) @(BackendClusterArg2 (JustAccumulator op) _ _) $ pairinfo a (coerce x) (coerce y)
 
 deriving instance (Eq (BackendClusterArg2 op x y)) => Eq (BackendClusterArg2 (JustAccumulator op) x y)
 deriving instance (Show (BackendClusterArg2 op x y)) => Show (BackendClusterArg2 (JustAccumulator op) x y)
