@@ -29,14 +29,20 @@ import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solve
 import Data.Array.Accelerate.Data.Bits
 import Data.Array.Accelerate.Unsafe
 import Control.Concurrent
-import Quickhull
+-- import Quickhull
 main :: IO ()
 main = do
-  let xs = fromList (Z :. 10) [1 :: Int ..]
-  let ys = map (+1) $ 
-            use xs
-  let f = map (*2)
-  let program = awhile (map (A.>0) . asnd) (\(T2 a b) -> T2 (f a) (map (\x -> x - 1) b)) (T2 ys $ unit $ constant (100000 :: Int))
+  let xs = fromList (Z :. 2 :. 2) [1 :: Int ..]
+  -- let ys = map (+1) $ 
+  --           use xs
+  -- let f = map (*2)
+  -- let program = awhile (map (A.>0) . asnd) (\(T2 a b) -> T2 (f a) (map (\x -> x - 1) b)) (T2 ys $ unit $ constant (100000 :: Int))
+
+  putStrLn "mapscanmap:"
+  let f = map (*2) $ scanl1 (+) $ map (+4) $ use xs
+  putStrLn $ test @UniformScheduleFun @NativeKernel f
+  print $ run @Native f
+
   -- let program xs = 
   --   -- let xs = A.use (A.fromList (A.Z A.:. 10) ([0..] :: [Int])) in 
   --       A.map fst $ A.zip (A.reverse xs) (A.reverse $ A.backpermute (A.I1 10) Prelude.id (xs :: A.Acc (A.Vector Int)))
@@ -75,11 +81,6 @@ main = do
   -- let f = scanl1 (+) ys
   -- -- putStrLn $ test @UniformScheduleFun @NativeKernel f
   -- print $ run @Native f
-
-  putStrLn "mapscanmap:"
-  let f = map (*2) $ scanl1 (+) $ map (+4) ys
-  putStrLn $ test @UniformScheduleFun @NativeKernel f
-  print $ run @Native f
 
   
  

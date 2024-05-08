@@ -98,15 +98,32 @@ codegen :: ShortByteString
 codegen name env (Clustered c b) args = 
   codeGenFunction name (LLVM.Lam argTp "arg") $ do
     extractEnv
-    workstealLoop workstealIndex workstealActiveThreads (op scalarTypeInt32 $ constant (TupRsingle scalarTypeInt32) 1) $ \_ -> do
-      let b' = mapArgs BCAJA b
-      (acc, loopsize') <- execStateT (evalCluster (toOnlyAcc c) b' args gamma ()) (mempty, LS ShapeRz OP_Unit)
-      body acc loopsize'
-      retval_ $ boolean True
+    -- workstealLoop workstealIndex workstealActiveThreads (op scalarTypeInt32 $ constant (TupRsingle scalarTypeInt32) 1) $ \_ -> do
+    let b' = mapArgs BCAJA b
+    (acc, loopsize) <- execStateT (evalCluster (toOnlyAcc c) b' args gamma ()) (mempty, LS ShapeRz OP_Unit)
+    -- body acc loopsize'
+    acc' <- operandsMapToPairs acc $ \(accTypeR, toOp, fromOp) -> fmap fromOp $ flip execStateT (toOp acc) $ case loopsize of
+      LS loopshr loopsh -> 
+        workstealChunked loopshr workstealIndex workstealActiveThreads loopsh accTypeR (body loopshr toOp fromOp)
+    
+    retval_ $ boolean True
     where
+      ba = makeBackendArg @NativeOp args gamma c b
       (argTp, extractEnv, workstealIndex, workstealActiveThreads, gamma) = bindHeaderEnv env
-      body :: Accumulated -> Loopsizes -> CodeGen Native ()
-      body initialAcc partialLoopSize =
+      body :: ShapeR sh -> (Accumulated -> a) -> (a -> Accumulated) -> LoopWork sh (StateT a (CodeGen Native))
+      body ShapeRz _ _ = LoopWorkZ
+      body (ShapeRsnoc shr) toOp fromOp = LoopWorkSnoc (body shr toOp fromOp) (\i is -> StateT $ \op -> second toOp <$> runStateT (foo i is) (fromOp op))
+        where
+      foo :: Operands Int -> [Operands Int] -> StateT Accumulated (CodeGen Native) ()
+      foo linix ixs = do
+        let d = length ixs -- TODO check: this or its inverse (i.e. totalDepth - length ixs)?
+        let i = (d, linix, ixs)
+        newInputs <- readInputs @_ @_ @NativeOp i args ba gamma
+        outputs <- evalOps @NativeOp i c newInputs args gamma
+        writeOutputs @_ @_ @NativeOp i args outputs gamma
+
+      body' :: Accumulated -> Loopsizes -> CodeGen Native ()
+      body' initialAcc partialLoopSize =
         case partialLoopSize of -- used to combine with loopSize here, but I think we can do everything in the static analysis?
           LS shr' sh' ->
             let go :: ShapeR sh -> Operands sh -> (Int, Operands Int, [Operands Int]) -> StateT Accumulated (CodeGen Native) ()
@@ -529,8 +546,6 @@ isAtDepth vs x = x == depth vs
 isAtDepth' :: ShapeR sh -> Int -> Bool
 isAtDepth' vs x = x == rank vs
 
-typerInt :: TypeR Int
-typerInt = TupRsingle scalarTypeInt
 
 zeroes :: TypeR a -> Operands a
 zeroes TupRunit = OP_Unit
