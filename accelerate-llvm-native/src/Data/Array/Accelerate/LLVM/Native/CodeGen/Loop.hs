@@ -1,8 +1,9 @@
 {-# LANGUAGE GADTs               #-}
+{-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TemplateHaskell     #-}
-{-# LANGUAGE TypeApplications    #-}
 {-# LANGUAGE TupleSections #-}
+{-# LANGUAGE TypeApplications    #-}
 -- |
 -- Module      : Data.Array.Accelerate.LLVM.CodeGen.Native.Loop
 -- Copyright   : [2014..2020] The Accelerate Team
@@ -37,6 +38,9 @@ import LLVM.AST.Type.Instruction.Volatile
 import qualified LLVM.AST.Type.Instruction.RMW as RMW
 import Control.Monad.Trans
 import Control.Monad.State
+import Data.Array.Accelerate.LLVM.CodeGen.Base
+import LLVM.AST.Type.Function
+import LLVM.AST.Type.Name
 
 -- | A standard 'for' loop, that steps from the start to end index executing the
 -- given function at each index.
@@ -79,11 +83,11 @@ imapNestFromTo shr start end extent body =
 loopWorkFromTo :: ShapeR sh -> Operands sh -> Operands sh -> Operands sh -> TypeR s -> LoopWork sh (StateT (Operands s) (CodeGen Native)) -> StateT (Operands s) (CodeGen Native) ()
 loopWorkFromTo shr start end extent tys loopwork = do
   linix <- lift (intOfIndex shr extent start)
-  loopWorkFromTo' shr start end linix [] tys loopwork
+  loopWorkFromTo' shr start end extent linix [] tys loopwork
 
-loopWorkFromTo' :: ShapeR sh -> Operands sh -> Operands sh -> Operands Int -> [Operands Int] -> TypeR s -> LoopWork sh (StateT (Operands s) (CodeGen Native)) -> StateT (Operands s) (CodeGen Native) ()
-loopWorkFromTo' ShapeRz OP_Unit OP_Unit _ _ _ LoopWorkZ = pure ()
-loopWorkFromTo' (ShapeRsnoc shr) (OP_Pair start' start) (OP_Pair end' end) linix ixs tys (LoopWorkSnoc lw foo) = do
+loopWorkFromTo' :: ShapeR sh -> Operands sh -> Operands sh -> Operands sh -> Operands Int -> [Operands Int] -> TypeR s -> LoopWork sh (StateT (Operands s) (CodeGen Native)) -> StateT (Operands s) (CodeGen Native) ()
+loopWorkFromTo' ShapeRz OP_Unit OP_Unit OP_Unit _ _ _ LoopWorkZ = pure ()
+loopWorkFromTo' (ShapeRsnoc shr) (OP_Pair start' start) (OP_Pair end' end) (OP_Pair extent' _) linix ixs tys (LoopWorkSnoc lw foo) = do
   StateT $ \s -> ((),) <$> Loop.iter
     (TupRpair typerInt typerInt)
     tys
@@ -92,10 +96,15 @@ loopWorkFromTo' (ShapeRsnoc shr) (OP_Pair start' start) (OP_Pair end' end) linix
     (\(OP_Pair i _) -> lt singleType i end)
     (\(OP_Pair i l) -> OP_Pair <$> add numType (constant typerInt 1) i <*> add numType (constant typerInt 1) l)
     (\(OP_Pair i l) -> execStateT $ do
-                        loopWorkFromTo' shr start' end' l (i:ixs) tys lw
+                        recurlinix <- lift $ mul numType l $ firstOrZero shr extent'
+                        loopWorkFromTo' shr start' end' extent' recurlinix (i:ixs) tys lw
                         foo l (i : ixs))
 
-                  
+                
+firstOrZero :: ShapeR sh -> Operands sh -> Operands Int
+firstOrZero ShapeRz _ = constant typerInt 0
+firstOrZero ShapeRsnoc{} (OP_Pair _ i) = i
+  
 
 typerInt :: TypeR Int
 typerInt = TupRsingle scalarTypeInt
@@ -260,13 +269,15 @@ workstealLoop counter activeThreads size doWork = do
   -- Work was already finished
   lift $ retval_ $ boolean False
 
+  -- lift $ setBlock dummy -- without this, the previous block always returns True for some reason
+  
+
 workstealChunked :: ShapeR sh -> Operand (Ptr Int32) -> Operand (Ptr Int32) -> Operands sh -> TypeR s -> LoopWork sh (StateT (Operands s) (CodeGen Native)) -> StateT (Operands s) (CodeGen Native) ()
 workstealChunked shr counter activeThreads sh tys loopwork = do
   let chunkSz = chunkSize' shr sh
   chunkCounts <- lift $ chunkCount shr sh chunkSz
   chunkCnt <- lift $ shapeSize shr chunkCounts
   chunkCnt' :: Operand Int32 <- lift $ instr' $ Trunc boundedType boundedType $ op TypeInt chunkCnt
-
   workstealLoop counter activeThreads chunkCnt' $ \chunkLinearIndex -> do
     chunkLinearIndex' <- lift $ instr' $ Ext boundedType boundedType chunkLinearIndex
     chunkIndex <- lift $ indexOfInt shr chunkCounts (OP_Int chunkLinearIndex')
@@ -276,10 +287,16 @@ workstealChunked shr counter activeThreads sh tys loopwork = do
     loopWorkFromTo shr start end sh tys loopwork
 
 
+
 chunkSize' :: ShapeR sh -> Operands sh -> Operands sh
 chunkSize' ShapeRz OP_Unit = OP_Unit
 chunkSize' (ShapeRsnoc ShapeRz) (OP_Pair _ sz) = OP_Pair OP_Unit sz
 chunkSize' (ShapeRsnoc shr) (OP_Pair sh _) = OP_Pair (chunkSize' shr sh) (liftInt 1)
+-- chunkSize' (ShapeRsnoc shr) (OP_Pair _ sz) = OP_Pair (ones shr) sz 
+--   where
+--     ones :: ShapeR sh -> Operands sh
+--     ones ShapeRz = OP_Unit
+--     ones (ShapeRsnoc shr) = OP_Pair (ones shr) (liftInt 1)
 
 -- chunkSize :: ShapeR sh -> Operands sh
 -- chunkSize ShapeRz = OP_Unit
@@ -338,13 +355,13 @@ chunkStart (ShapeRsnoc shr) (OP_Pair chunkSh chunkSz) (OP_Pair sh sz) = do
 
 chunkEnd
   :: ShapeR sh
-  -> Operands sh -- Array sizee
+  -> Operands sh -- Array size (extent)
   -> Operands sh -- Chunk size
   -> Operands sh -- Chunk start
   -> CodeGen Native (Operands sh) -- Chunk end
 chunkEnd ShapeRz OP_Unit OP_Unit OP_Unit = return OP_Unit
 chunkEnd (ShapeRsnoc shr) (OP_Pair sh0 sz0) (OP_Pair sh1 sz1) (OP_Pair sh2 sz2) = do
-  sh3 <- chunkStart shr sh1 sh2
+  sh3 <- chunkEnd shr sh0 sh1 sh2
   sz3 <- add numType sz2 sz1
   sz3' <- A.min singleType sz3 sz0
   return $ OP_Pair sh3 sz3'
@@ -360,3 +377,26 @@ data LoopWork sh m where
                -- The list contains only indices available, i.e. not the ones in even deeper nesting
                -> (Operands Int -> [Operands Int] -> m ())
                -> LoopWork (sh, Int) m
+
+
+
+---- debugging tools ----
+putchar :: Operands Int -> CodeGen Native (Operands Int)
+putchar x = call (lamUnnamed primType $ Body (PrimType primType) Nothing (Label "putchar")) 
+                 (ArgumentsCons (op TypeInt x) [] ArgumentsNil) 
+                 []
+putcharA, putcharB, putcharC, putcharD, putcharE, putcharF, putcharG, putcharH :: StateT s (CodeGen Native) ()
+putcharA = void $ lift $ putchar $ liftInt 65
+putcharB = void $ lift $ putchar $ liftInt 66
+putcharC = void $ lift $ putchar $ liftInt 67
+putcharD = void $ lift $ putchar $ liftInt 68
+putcharE = void $ lift $ putchar $ liftInt 69
+putcharF = void $ lift $ putchar $ liftInt 70
+putcharG = void $ lift $ putchar $ liftInt 71
+putcharH = void $ lift $ putchar $ liftInt 72
+
+printShape :: ShapeR sh -> Operands sh -> CodeGen Native ()
+printShape ShapeRz _ = void $ putchar $ liftInt $ 65+25
+printShape (ShapeRsnoc shr) (OP_Pair sh sz) = do
+  putchar =<< add numType (liftInt 48) sz
+  printShape shr sh

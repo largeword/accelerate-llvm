@@ -63,7 +63,7 @@ import Unsafe.Coerce (unsafeCoerce)
 import Data.Array.Accelerate.LLVM.CodeGen.Sugar (app1, IROpenFun2 (app2))
 import Data.Array.Accelerate.LLVM.CodeGen.Exp (llvmOfFun1, intOfIndex, llvmOfFun2)
 import Data.Array.Accelerate.Trafo.Desugar (ArrayDescriptor(..))
-import Data.Array.Accelerate.LLVM.CodeGen.Arithmetic ( when, ifThenElse, just, add, lt, mul, eq, fromJust, isJust )
+import Data.Array.Accelerate.LLVM.CodeGen.Arithmetic ( when, ifThenElse, just, add, lt, mul, eq, fromJust, isJust, liftInt )
 import Data.Array.Accelerate.Analysis.Match (matchShapeR)
 import Data.Array.Accelerate.Trafo.Exp.Substitution (compose)
 import Data.Array.Accelerate.AST.Operation (groundToExpVar, Fun, mapArgs)
@@ -97,16 +97,17 @@ codegen :: ShortByteString
         -> LLVM Native (Module (KernelType env))
 codegen name env (Clustered c b) args = 
   codeGenFunction name (LLVM.Lam argTp "arg") $ do
+    -- putchar $ liftInt 73
     extractEnv
+    -- putchar $ liftInt 74
     -- workstealLoop workstealIndex workstealActiveThreads (op scalarTypeInt32 $ constant (TupRsingle scalarTypeInt32) 1) $ \_ -> do
     let b' = mapArgs BCAJA b
     (acc, loopsize) <- execStateT (evalCluster (toOnlyAcc c) b' args gamma ()) (mempty, LS ShapeRz OP_Unit)
     -- body acc loopsize'
     acc' <- operandsMapToPairs acc $ \(accTypeR, toOp, fromOp) -> fmap fromOp $ flip execStateT (toOp acc) $ case loopsize of
       LS loopshr loopsh -> 
-        workstealChunked loopshr workstealIndex workstealActiveThreads loopsh accTypeR (body loopshr toOp fromOp)
-    
-    retval_ $ boolean True
+        workstealChunked loopshr workstealIndex workstealActiveThreads (flipShape loopshr loopsh) accTypeR (body loopshr toOp fromOp)
+    pure ()
     where
       ba = makeBackendArg @NativeOp args gamma c b
       (argTp, extractEnv, workstealIndex, workstealActiveThreads, gamma) = bindHeaderEnv env
@@ -162,6 +163,19 @@ codegen name env (Clustered c b) args =
                               (\(OP_Pair i l) -> OP_Pair <$> add numType (constant typerInt 1) i <*> add numType (constant typerInt 1) l)
                               (\(OP_Pair i l) -> fmap (toR . snd) . runStateT (body (d, l, i:outerI)) . fromR)
 
+
+flipShape :: forall sh. ShapeR sh -> Operands sh -> Operands sh
+flipShape shr = multidim shr . reverse . multidim' shr
+
+multidim :: ShapeR sh -> [Operands Int] -> Operands sh
+multidim ShapeRz [] = OP_Unit
+multidim (ShapeRsnoc shr) (i:is) = OP_Pair (multidim shr is) i
+multidim _ _ = error "shouldn't have trusted me"
+
+multidim' :: ShapeR sh -> Operands sh -> [Operands Int]
+multidim' ShapeRz OP_Unit = []
+multidim' (ShapeRsnoc shr) (OP_Pair sh i) = i : multidim' shr sh
+
 -- We use some unsafe coerces in the context of the accumulators. 
 -- Some, in this function, are very local. Others, like in evalOp, 
 -- just deal with the assumption that the specific operand stored at index l indeed belongs to operation l.
@@ -195,13 +209,7 @@ operandsMapToPairs acc k
 --   ShapeMinus sh () = sh
 --   ShapeMinus (sh, Int) (sh', Int) = ShapeMinus sh sh'
 
-firstOrZero :: ShapeR sh -> Operands sh -> Operands Int
-firstOrZero ShapeRz _ = constant typerInt 0
-firstOrZero ShapeRsnoc{} (OP_Pair _ i) = i
 
-
-flipShape :: forall sh. ShapeR sh -> Operands sh -> Operands sh
-flipShape shr = multidim shr . reverse . multidim' shr
 
 -- TODO: we need to only consider each _in-order_ vertical argument
 -- TODO: we ignore backpermute currently. Could use this function to check the outputs and vertical, and the staticclusteranalysis evalI for the inputs.
@@ -361,14 +369,6 @@ instance EvalOp NativeOp where
     | otherwise = pure $ Push Env.Empty $ FromArg (Value' CN (Shape' shr' (CJ sh')))
   -- evalOp _ _ _ _ _ = error "unmatched pattern?"
 
-multidim :: ShapeR sh -> [Operands Int] -> Operands sh
-multidim ShapeRz [] = OP_Unit
-multidim (ShapeRsnoc shr) (i:is) = OP_Pair (multidim shr is) i
-multidim _ _ = error "shouldn't have trusted me"
-
-multidim' :: ShapeR sh -> Operands sh -> [Operands Int]
-multidim' ShapeRz OP_Unit = []
-multidim' (ShapeRsnoc shr) (OP_Pair sh i) = i : multidim' shr sh
 
 instance TupRmonoid Operands where
   pair' = OP_Pair
