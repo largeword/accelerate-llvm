@@ -183,9 +183,9 @@ hireWorkers :: IO Workers
 hireWorkers = do
   nproc <- getNumProcessors
   ncaps <- getNumCapabilities
-  menv  <- (readMaybe =<<) <$> lookupEnv "ACCELERATE_LLVM_NATIVE_THREADS"
+  -- menv  <- (readMaybe =<<) <$> lookupEnv "ACCELERATE_LLVM_NATIVE_THREADS"
 
-  let nthreads = fromMaybe nproc menv
+  let nthreads = 1 --fromMaybe nproc menv
 
   workers <- hireWorkersOn [0 .. nthreads-1]
   return workers

@@ -90,8 +90,9 @@ loopWorkFromTo shr start end extent tys (loopwork,finish) = do
 
 loopWorkFromTo' :: ShapeR sh -> Operands sh -> Operands sh -> Operands sh -> Operands Int -> [Operands Int] -> TypeR s -> LoopWork sh (StateT (Operands s) (CodeGen Native)) -> StateT (Operands s) (CodeGen Native) ()
 loopWorkFromTo' ShapeRz OP_Unit OP_Unit OP_Unit _ _ _ LoopWorkZ = pure ()
-loopWorkFromTo' (ShapeRsnoc shr) (OP_Pair start' start) (OP_Pair end' end) (OP_Pair extent' _) linixprev ixs tys (LoopWorkSnoc lw foo) = do
+loopWorkFromTo' (ShapeRsnoc shr) (OP_Pair start' start) (OP_Pair end' endMaybe) (OP_Pair extent' extent) linixprev ixs tys (LoopWorkSnoc lw foo) = do
   linix <- lift $ add numType start linixprev
+  end <- lift $ A.min singleType endMaybe extent
   StateT $ \s -> ((),) <$> Loop.iter
     (TupRpair typerInt typerInt)
     tys

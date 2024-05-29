@@ -88,7 +88,7 @@ import Data.Array.Accelerate.Backend (SLVOperation(..))
 import Data.Array.Accelerate.LLVM.CodeGen.IR
 
 
-
+traceIfDebugging str a = a --Debug.Trace.trace str a
 
 codegen :: ShortByteString
         -> Env AccessGroundR env
@@ -105,7 +105,7 @@ codegen name env (Clustered c b) args =
     (acc, loopsize) <- execStateT (evalCluster (toOnlyAcc c) b' args gamma ()) (mempty, LS ShapeRz OP_Unit)
     -- body acc loopsize'
     acc' <- operandsMapToPairs acc $ \(accTypeR, toOp, fromOp) -> fmap fromOp $ flip execStateT (toOp acc) $ case loopsize of
-      LS loopshr loopsh -> 
+      LS loopshr loopsh -> -- Debug.Trace.traceShow (rank loopshr) $
         workstealChunked loopshr workstealIndex workstealActiveThreads (flipShape loopshr loopsh) accTypeR 
           (body loopshr toOp fromOp, -- the LoopWork
           StateT $ \op -> second toOp <$> runStateT (foo (liftInt 0) []) (fromOp op)) -- the action to run after the outer loop
@@ -292,19 +292,19 @@ instance EvalOp NativeOp where
   -- evalOp _ _ _ _ _ = error "todo: add depth checks to all matches"
   evalOp (d,_,_) _ NMap gamma (Push (Push (Push Env.Empty (BAE _ _)) (BAE (Value' x' (Shape' shr sh)) (BCAN2 _ d'))) (BAE f _))
     = lift $ Push Env.Empty . FromArg . flip Value' (Shape' shr sh) <$> case x' of
-      CJ x | d == d' -> CJ <$> app1 (llvmOfFun1 @Native f gamma) x
+      CJ x | d == d' -> CJ <$> (traceIfDebugging ("map" <> show d') $ app1 (llvmOfFun1 @Native f gamma) x)
       _   -> pure CN
   evalOp _ _ NBackpermute _ (Push (Push (Push Env.Empty (BAE (Shape' shr sh) _)) (BAE (Value' x _) _)) _)
     = lift $ pure $ Push Env.Empty $ FromArg $ Value' x $ Shape' shr sh
   evalOp (d',_,is) _ NGenerate gamma (Push (Push Env.Empty (BAE (Shape' shr (CJ sh)) _)) (BAE f (BCAN2 Nothing d)))
-    | shr `isAtDepth'` d' = lift $ Push Env.Empty . FromArg . flip Value' (Shape' shr (CJ sh)) . CJ <$> app1 (llvmOfFun1 @Native f gamma) (multidim shr is)
-    | d' == d = error $ "how come we didn't hit the case above?" <> show (d', d, rank shr)
+    | shr `isAtDepth'` d' = traceIfDebugging ("generate" <> show d') $ lift $ Push Env.Empty . FromArg . flip Value' (Shape' shr (CJ sh)) . CJ <$> app1 (llvmOfFun1 @Native f gamma) (multidim shr is)
+    -- | d' == d = error $ "how come we didn't hit the case above?" <> show (d', d, rank shr)
     | otherwise        = pure $ Push Env.Empty $ FromArg $ Value' CN (Shape' shr (CJ sh))
   evalOp (d',_,is) _ NGenerate gamma (Push (Push Env.Empty (BAE (Shape' shr sh) _)) (BAE f (BCAN2 (Just (BP shrO shrI idxTransform ls)) d)))
     | not $ shrO `isAtDepth'` d'
     = pure $ Push Env.Empty $ FromArg $ flip Value' (Shape' shr sh) CN
     | Just Refl <- matchShapeR shrI shr
-    = lift $ Push Env.Empty . FromArg . flip Value' (Shape' shr sh) . CJ <$> app1 (llvmOfFun1 @Native (compose f idxTransform) gamma) (multidim shrO is)
+    = traceIfDebugging ("generate" <> show d') $ lift $ Push Env.Empty . FromArg . flip Value' (Shape' shr sh) . CJ <$> app1 (llvmOfFun1 @Native (compose f idxTransform) gamma) (multidim shrO is)
     | otherwise = error "bp shapeR doesn't match generate's output"
   -- For Permute, we ignore all the BP info here and simply assume that there is none
   evalOp (d',_,is) _ NPermute gamma (Push (Push (Push (Push (Push Env.Empty
@@ -315,7 +315,7 @@ instance EvalOp NativeOp where
     (BAE (flip (llvmOfFun2 @Native) gamma -> c) _)) -- combination function
     | CJ x <- x'
     , shrx `isAtDepth'` d'
-    = lift $ do
+    = traceIfDebugging ("permute" <> show d') $ lift $ do
         ix' <- app1 f (multidim shrx is)
         -- project element onto the destination array and (atomically) update
         when (isJust ix') $ do
@@ -335,7 +335,7 @@ instance EvalOp NativeOp where
     , CJ x <- x'
     , d == d'
     , inner:_ <- ixs
-    = StateT $ \acc -> do
+    = traceIfDebugging ("scan" <> show d') $ StateT $ \acc -> do
         let (Exists (unsafeCoerce @(Operands _) @(Operands e) -> accX), eTy) = acc M.! l
         z <- ifThenElse (ty, eq singleType inner (constant typerInt 0)) (pure x) (app2 f accX x) -- note: need to apply the accumulator as the _left_ argument to the function
         pure (Push Env.Empty $ FromArg (Value' (CJ z) sh), M.adjust (const (Exists z, eTy)) l acc)
@@ -349,18 +349,18 @@ instance EvalOp NativeOp where
     , CJ x <- x'
     , d == d'
     , inner:_ <- ixs
-    = StateT $ \acc -> do
+    = traceIfDebugging ("fold2work" <> show d') $ StateT $ \acc -> do
         let (Exists (unsafeCoerce @(Operands _) @(Operands e) -> accX), eTy) = acc M.! l
         z <- ifThenElse (ty, eq singleType inner (constant typerInt 0)) (pure x) (app2 f accX x) -- note: need to apply the accumulator as the _left_ argument to the function
         pure (Push Env.Empty $ FromArg (Value' (CJ z) (Shape' shr' (CJ sh'))), M.adjust (const (Exists z, eTy)) l acc)
     | f <- llvmOfFun2 @Native f' gamma
     , Lam (lhsToTupR -> ty :: TypeR e) _ <- f'
     , d == d'+1 -- the fold was in the iteration above; we grab the result from the accumulator now
-    = StateT $ \acc -> do
+    = traceIfDebugging ("fold2done" <> show d') $ StateT $ \acc -> do
         let (Exists (unsafeCoerce @(Operands _) @(Operands e) -> x), _) = acc M.! l
         pure (Push Env.Empty $ FromArg (Value' (CJ x) (Shape' shr' (CJ sh'))), acc)
     | otherwise = pure $ Push Env.Empty $ FromArg (Value' CN (Shape' shr' (CJ sh')))
-  -- evalOp _ _ _ _ _ = error "unmatched pattern?"
+  evalOp _ _ _ _ _ = error "unmatched pattern?"
 
 
 instance TupRmonoid Operands where

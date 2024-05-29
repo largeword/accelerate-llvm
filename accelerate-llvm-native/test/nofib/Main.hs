@@ -30,11 +30,27 @@ import Data.Array.Accelerate.Data.Bits
 import Data.Array.Accelerate.Unsafe
 import Control.Concurrent
 -- import Quickhull
+
+loop :: [a] -> [a]
+loop xs = xs Prelude.<> loop xs
+
 main :: IO ()
 main = do
-  -- let xs = fromList (Z :. 5 :. 10) [1 :: Int ..]
-  -- let ys = map (+1) $ 
+
+  let histogram :: Acc (Vector Int) -> Acc (Vector Int)
+      histogram xs =
+        let zeros = fill (constant (Z:.10)) 0
+            ones  = fill (shape xs)         1
+        in
+        permute (+) zeros (\ix -> Just_ (I1 (xs!ix))) ones
+
+  let xs = fromList (Z :. 50) $ loop $ [1 :: Int .. 9] Prelude.<> [2 .. 8] 
+
+  -- let ys = map (\x -> x*x) $ 
   --           use xs
+  -- let zs = sum $ reshape (Z_ ::. 5 ::. 10) ys
+  -- let (zs, _) = A.unzip $ awhile (A.any (\(T2 a b) -> a <= 5) ) (map (\(T2 a b) -> T2 b (a+1))) ys
+
   -- let f = map (*2)
   -- let program = awhile (map (A.>0) . asnd) (\(T2 a b) -> T2 (f a) (map (\x -> x - 1) b)) (T2 ys $ unit $ constant (100000 :: Int))
 
@@ -45,8 +61,8 @@ main = do
   --                   then -1
   --                   else 0 :: Exp Double
 
-  -- putStrLn $ test @UniformScheduleFun @NativeKernel zs
-  -- print $ run @Native zs
+  putStrLn $ test @UniformScheduleFun @NativeKernel histogram
+  print $ runN @Native histogram xs
 
   -- let negatives = [
   --       I3 211 154 98,
@@ -71,15 +87,15 @@ main = do
   --       I3 243 172 14,
   --       I3 54 209 40]
 
-  let zs = generate (Z_ ::. constant 15 ::. constant 15 ::. constant 11) $ \(I3 x y z) -> T3 x y z
-              -- cond (Prelude.foldl1 (||) $ Prelude.map (== idx) negatives)
-              --   (-1)
-              --   $ cond (Prelude.foldl1 (||) $ Prelude.map (==idx) positives)
-              --     1
-                  -- 0 :: Exp Double
-  -- let zs' = zs $ use $ fromList Z [11 :: Int]
-  putStrLn $ test @UniformScheduleFun @NativeKernel zs
-  print $ run @Native zs
+  -- let zs = generate (Z_ ::. constant 15 ::. constant 15 ::. constant 11) $ \(I3 x y z) -> T3 x y z
+  --             -- cond (Prelude.foldl1 (||) $ Prelude.map (== idx) negatives)
+  --             --   (-1)
+  --             --   $ cond (Prelude.foldl1 (||) $ Prelude.map (==idx) positives)
+  --             --     1
+  --                 -- 0 :: Exp Double
+  -- -- let zs' = zs $ use $ fromList Z [11 :: Int]
+  -- putStrLn $ test @UniformScheduleFun @NativeKernel zs
+  -- print $ run @Native zs
 
   -- putStrLn "scan:"
   -- let f = 
