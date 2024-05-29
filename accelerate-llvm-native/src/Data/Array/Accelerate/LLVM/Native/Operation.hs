@@ -247,6 +247,7 @@ instance MakesILP NativeOp where
       ( mempty & infusibleEdges .~ Set.map (-?> l) (lTargets <> lLocks)) -- add infusible edges from the producers of target and lock arrays to the permute
       (    inputConstraints l lIns
         <> ILP.c (InDims l) .==. int (rank shr)
+        <> ILP.c (InDir  l) .==. int (-2)
         <> ILP.c (OutDir l) .==. int (-3)) -- Permute cannot fuse with its consumer
       ( lower (-2) (InDir l)
       <> upper (InDir l) (-1) ) -- default lowerbound for the input, but not for the output (as we set it to -3). 

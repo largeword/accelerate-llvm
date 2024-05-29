@@ -13,6 +13,7 @@
 {-# LANGUAGE RebindableSyntax #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE RankNTypes #-}
 module Main where
 
 import Data.Array.Accelerate as A
@@ -29,22 +30,84 @@ import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solve
 import Data.Array.Accelerate.Data.Bits
 import Data.Array.Accelerate.Unsafe
 import Control.Concurrent
+import Control.DeepSeq
 -- import Quickhull
-
-loop :: [a] -> [a]
-loop xs = xs Prelude.<> loop xs
+import Data.Array.Accelerate.Trafo.Partitioning.ILP (Benchmarking(..))
+import Criterion.Types
 
 main :: IO ()
 main = do
-
+  let loop :: [a] -> [a]
+      loop xs = xs Prelude.<> loop xs
+ 
   let histogram :: Acc (Vector Int) -> Acc (Vector Int)
       histogram xs =
         let zeros = fill (constant (Z:.10)) 0
             ones  = fill (shape xs)         1
         in
         permute (+) zeros (\ix -> Just_ (I1 (xs!ix))) ones
+ 
+  let xs = fromList (Z :. 50) $ loop $ [1 :: Int .. 9] Prelude.<> [2 .. 8]
+ 
+  putStrLn $ test @UniformScheduleFun @NativeKernel histogram
+  print $ runN @Native histogram xs
 
-  let xs = fromList (Z :. 50) $ loop $ [1 :: Int .. 9] Prelude.<> [2 .. 8] 
+
+
+  let xs = fromList (Z:.1000:.1000) [1::Int ..]
+
+  let greedyForwardBad xs = 
+        let largexs = replicate (Z_ ::. (1000 :: Exp Int) ::. All_ ::. (1000 :: Exp Int)) xs
+            ys = generate (Z_ ::. (1000 :: Exp Int)) (\(I1 i) -> i + xs ! (I1 $ 999 - i))
+            largeys = replicate (Z_ ::. (1000 :: Exp Int) ::. All_ ::. (1000 :: Exp Int)) ys
+            result = sum $ flatten $ zipWith (+) largexs largeys
+        in result
+  
+  let greedyBackwardBad (xs :: Acc (Vector Int)) =
+        let large = replicate (Z_ ::. All_ ::. (1000 :: Exp Int)) xs
+            ys = sum large
+            zs = product large
+            result = imap (\(I1 i) y -> if zs ! (I1 $ 999 - i) == 0 then y else 1+y) ys
+        in result
+
+  let transpose' x =
+        let sh ::. a ::. b = shape x
+        in backpermute (sh ::. b ::. a) (\(sh ::. b ::. a) -> sh ::. a ::. b) x
+
+
+  let matmul (T2 xs ys) = 
+        let Z_ ::. rows ::. _    = shape xs
+            Z_ ::. _    ::. cols = shape ys
+        in sum $ transpose' $ zipWith (*)
+            (replicate (Z_ ::. All_ ::. All_ ::. cols) xs)
+            (replicate (Z_ ::. rows ::. All_ ::. All_) ys)
+
+  let testcase' :: (Arrays b, NFData b) => ((Acc (Matrix Int, Matrix Int) -> Acc b) -> (Matrix Int, Matrix Int) -> b) -> (Prelude.String, Acc (Matrix Int, Matrix Int) -> Acc b) -> Benchmark
+      testcase' f (name, p) = env (Prelude.pure (f p, xs)) $ \ ~(p', xs') -> bench name $ nf p' (xs',xs')
+
+  let testcase :: Prelude.String -> (forall b. Arrays b =>(Acc (Matrix Int, Matrix Int) -> Acc b) -> (Matrix Int, Matrix Int) -> b) -> Benchmark
+      testcase name f = bgroup name $ [
+        testcase' f ("matmul", matmul)
+        --, testcase' f ("forwardbad",greedyForwardBad)
+        --, testcase' f ("backwardbad", greedyBackwardBad)
+        ]
+    
+  defaultMainWith (defaultConfig { timeLimit = 5*60, resamples = 10000, csvFile = Just "benchmarksoutput"}) $ Prelude.map (\obj -> testcase (show obj) (runNWithObj @Native obj))
+    [ 
+      Everything
+    , NumClusters
+    , ArrayReads
+    , ArrayReadsWrites
+    , IntermediateArrays
+    , FusedEdges
+    ]
+    Prelude.<> Prelude.map (\b -> testcase (show b) (runNBench @Native b))
+    [ GreedyUp
+    , GreedyDown
+    , NoFusion
+    ]
+
+
 
   -- let ys = map (\x -> x*x) $ 
   --           use xs
@@ -61,8 +124,6 @@ main = do
   --                   then -1
   --                   else 0 :: Exp Double
 
-  putStrLn $ test @UniformScheduleFun @NativeKernel histogram
-  print $ runN @Native histogram xs
 
   -- let negatives = [
   --       I3 211 154 98,
@@ -173,7 +234,7 @@ main = do
 benchmarkmain = defaultMain $ 
     Prelude.map (benchOption . Prelude.Left) [minBound :: Objective .. maxBound] 
     Prelude.++ 
-    Prelude.map (benchOption . Prelude.Right) [NoFusion, GreedyFusion]
+    Prelude.map (benchOption . Prelude.Right) [NoFusion, GreedyUp, GreedyDown]
  where
     benchOption :: Prelude.Either Objective Benchmarking -> Benchmark
     benchOption obj = bgroup (show obj)

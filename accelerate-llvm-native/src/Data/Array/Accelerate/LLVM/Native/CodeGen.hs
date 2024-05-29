@@ -314,7 +314,7 @@ instance EvalOp NativeOp where
     (BAE (ArrayDescriptor shrt sht buft, tty)   _)) -- target
     (BAE (flip (llvmOfFun2 @Native) gamma -> c) _)) -- combination function
     | CJ x <- x'
-    , shrx `isAtDepth'` d'
+    , d == d'
     = traceIfDebugging ("permute" <> show d') $ lift $ do
         ix' <- app1 f (multidim shrx is)
         -- project element onto the destination array and (atomically) update
@@ -429,43 +429,43 @@ merge ls v gamma = combine ls $ LS (gvarsToShapeR v) (aprjParameters (unsafeToEx
 instance EvalOp (JustAccumulator NativeOp) where
   type EvalMonad (JustAccumulator NativeOp) = StateT (Accumulated, Loopsizes) (CodeGen Native)
   type Index (JustAccumulator NativeOp) = ()
-  type Embed' (JustAccumulator NativeOp) = TypeR
+  type Embed' (JustAccumulator NativeOp) = Both TypeR Operands
   type EnvF (JustAccumulator NativeOp) = GroundOperand
 
-  unit = TupRunit
+  unit = Both TupRunit OP_Unit
   embed = error "not needed"
-  indexsh  vars _ = pure $ mapTupR varType $ unsafeToExpVars vars
-  indexsh' vars _ = pure $ mapTupR varType vars
+  indexsh  vars gamma = pure $ Both (mapTupR varType $ unsafeToExpVars vars) (aprjParameters (unsafeToExpVars vars) gamma)
+  indexsh' vars gamma = pure $ Both (mapTupR varType vars) (aprjParameters vars gamma)
 
-  subtup SubTupRskip _ = TupRunit
+  subtup SubTupRskip _ = Both TupRunit OP_Unit
   subtup SubTupRkeep x = x
-  subtup (SubTupRpair a b) (TupRpair x y) = TupRpair (subtup @(JustAccumulator NativeOp) a x) (subtup @(JustAccumulator NativeOp) b y)
+  subtup (SubTupRpair a b) (Both (TupRpair x y) (OP_Pair x' y')) = case (subtup @(JustAccumulator NativeOp) a (Both x x'), subtup @(JustAccumulator NativeOp) b (Both y y')) of
+    (Both l l', Both r r') -> Both (TupRpair l r) (OP_Pair l' r')  
   subtup _ _ = error "subtup-pair with non-pair TypeR"
 
-  readInput ty sh _ gamma (BCA2JA IsUnit) _ = pure TupRunit
-  readInput ty sh _ gamma (BCA2JA (BCAN2 Nothing  d)) _ = StateT $ \(acc,ls) -> pure (TupRsingle ty, (acc, merge ls sh gamma))
-  readInput ty sh _ gamma (BCA2JA (BCAN2 (Just (BP _ _ _ ls')) d)) _ = StateT $ \(acc,ls) -> pure (TupRsingle ty, (acc, merge ls ls' gamma))
+  readInput ty sh _ gamma (BCA2JA IsUnit) _ = pure $ Both TupRunit OP_Unit
+  readInput ty sh _ gamma (BCA2JA (BCAN2 Nothing  d)) _ = StateT $ \(acc,ls) -> pure (Both (TupRsingle ty) (zeroes $ TupRsingle ty), (acc, merge ls sh gamma))
+  readInput ty sh _ gamma (BCA2JA (BCAN2 (Just (BP _ _ _ ls')) d)) _ = StateT $ \(acc,ls) -> pure (Both (TupRsingle ty) (zeroes $ TupRsingle ty), (acc, merge ls ls' gamma))
 
   writeOutput ty sh buf gamma ix x = StateT $ \(acc,ls) -> pure ((), (acc, merge ls sh gamma))
 
-  evalOp () l (JA NScanl1) _ (Push (Push _ (BAE (Value' ty sh) _)) (BAE f _))
+  evalOp () l (JA NScanl1) _ (Push (Push _ (BAE (Value' (Both ty x) sh) _)) (BAE f _))
     = StateT $ \(acc,ls) -> do
         let thing = zeroes ty
-        pure (Push Env.Empty $ FromArg (Value' ty sh), (M.insert l (Exists thing, Exists ty) acc, ls))
+        pure (Push Env.Empty $ FromArg (Value' (Both ty x) sh), (M.insert l (Exists thing, Exists ty) acc, ls))
   evalOp () _ (JA NFold1) _ _ = undefined
-  evalOp () l (JA NFold2) _ (Push (Push _ (BAE (Value' ty (Shape' (ShapeRsnoc shr) sh)) _)) (BAE _ _))
+  evalOp () l (JA NFold2) _ (Push (Push _ (BAE (Value' (Both ty x) (Shape' (ShapeRsnoc shr) sh)) _)) (BAE _ _))
     = StateT $ \(acc,ls) -> do
         let thing = zeroes ty
-        pure (Push Env.Empty $ FromArg (Value' ty (Shape' shr (case sh of TupRpair x _ -> x))), (M.insert l (Exists thing, Exists ty) acc, ls))
+        pure (Push Env.Empty $ FromArg (Value' (Both ty x) (Shape' shr (case sh of Both (TupRpair x _) (OP_Pair x' _) -> Both x x'))), (M.insert l (Exists thing, Exists ty) acc, ls))
   evalOp () _ (JA NMap) _ (Push (Push (Push Env.Empty (BAE _ _)) (BAE (Value' _ (Shape' shr sh)) _)) (BAE f _))
-    = lift $ pure $ Push Env.Empty $ FromArg $ Value' (getOutputType f) (Shape' shr sh)
+    = lift $ pure $ Push Env.Empty $ FromArg $ Value' (Both (getOutputType f) (zeroes (getOutputType f))) (Shape' shr sh)
   evalOp () _ (JA NBackpermute) _ (Push (Push (Push Env.Empty (BAE (Shape' shr sh) _)) (BAE (Value' x _) _)) _)
     = lift $ pure $ Push Env.Empty $ FromArg $ Value' x $ Shape' shr sh
   evalOp () _ (JA NGenerate) _ (Push (Push Env.Empty (BAE (Shape' shr sh) _)) (BAE f _))
-    = lift $ pure $ Push Env.Empty $ FromArg $ Value' (getOutputType f) (Shape' shr sh)
-  evalOp _ _ (JA NPermute) _ _
-    = lift $ pure Env.Empty
-
+    = lift $ pure $ Push Env.Empty $ FromArg $ Value' (Both (getOutputType f) (zeroes (getOutputType f))) (Shape' shr sh)
+  evalOp _ _ (JA NPermute) _ (Push (Push (Push (Push (Push Env.Empty (BAE (Value' _ (Shape' shr (Both _ sh))) _)) _) _) _) _)
+    = StateT $ \(acc,ls) -> pure (Env.Empty, (acc, combine ls $ LS shr sh))
  
 
 getOutputType :: Fun env (i -> o) -> TypeR o
