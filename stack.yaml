@@ -26,7 +26,9 @@ extra-deps:
   subdirs:
     - llvm-hs
     - llvm-hs-pure
-
+# - highs-lp-0.0
+# - linear-programming-0.0.1
+# - comfort-array-0.5.5
 # Override default flag values for local packages and extra-deps
 # flags:
 

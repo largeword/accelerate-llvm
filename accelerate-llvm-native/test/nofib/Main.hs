@@ -5,8 +5,8 @@
 --
 -- Maintainer  : Trevor L. McDonell <trevor.mcdonell@gmail.com>
 -- Stability   : experimental
--- Portability : non-portable (GHC extensions)
 --
+-- Portability : non-portable (GHC extensions)
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE FlexibleContexts #-}
@@ -34,40 +34,31 @@ import Control.DeepSeq
 -- import Quickhull
 import Data.Array.Accelerate.Trafo.Partitioning.ILP (Benchmarking(..))
 import Criterion.Types
+import Data.Array.Accelerate (testWithObjective)
 
 main :: IO ()
 main = do
-  let loop :: [a] -> [a]
-      loop xs = xs Prelude.<> loop xs
- 
-  let histogram :: Acc (Vector Int) -> Acc (Vector Int)
-      histogram xs =
-        let zeros = fill (constant (Z:.10)) 0
-            ones  = fill (shape xs)         1
-        in
-        permute (+) zeros (\ix -> Just_ (I1 (xs!ix))) ones
- 
-  let xs = fromList (Z :. 50) $ loop $ [1 :: Int .. 9] Prelude.<> [2 .. 8]
- 
-  putStrLn $ test @UniformScheduleFun @NativeKernel histogram
-  print $ runN @Native histogram xs
 
+  let xs'= fromList (Z:.1000)       [1::Int ..]
+      xs = fromList (Z:.10000000)       [1::Int ..]
+      ys = fromList (Z:.1000:.1000) [1::Int ..]
+      zs = fromList (Z:.1000:.1000) [0::Int ..]
 
-
-  let xs = fromList (Z:.1000:.1000) [1::Int ..]
-
-  let greedyForwardBad xs = 
-        let largexs = replicate (Z_ ::. (1000 :: Exp Int) ::. All_ ::. (1000 :: Exp Int)) xs
-            ys = generate (Z_ ::. (1000 :: Exp Int)) (\(I1 i) -> i + xs ! (I1 $ 999 - i))
-            largeys = replicate (Z_ ::. (1000 :: Exp Int) ::. All_ ::. (1000 :: Exp Int)) ys
-            result = sum $ flatten $ zipWith (+) largexs largeys
+  -- The forwards greedy algorithm can't (easily?) be fooled into manifesting a large array,
+  -- but it does do this example 1.5-2x as slow
+  let greedyForwardBad as = 
+        let (I1 x) = shape as
+            bs = map (*2) as
+            cs = map (+1) bs
+            xs = generate (Z_ ::. x) (\(I1 i) -> i + bs ! (I1 0))
+            result = sum $ zipWith (+) cs xs
         in result
-  
+  -- backwards greedy manifests a huge array  
   let greedyBackwardBad (xs :: Acc (Vector Int)) =
-        let large = replicate (Z_ ::. All_ ::. (1000 :: Exp Int)) xs
+        let large = replicate (Z_ ::. All_ ::. (1000000 :: Exp Int)) xs
             ys = sum large
             zs = product large
-            result = imap (\(I1 i) y -> if zs ! (I1 $ 999 - i) == 0 then y else 1+y) ys
+            result = imap (\(I1 i) y -> if zs ! (I1 0) == 0 then y else 1+y) ys
         in result
 
   let transpose' x =
@@ -81,25 +72,45 @@ main = do
         in sum $ transpose' $ zipWith (*)
             (replicate (Z_ ::. All_ ::. All_ ::. cols) xs)
             (replicate (Z_ ::. rows ::. All_ ::. All_) ys)
+  
+  let matmulcontext :: Acc (Matrix Int) -> Acc (Matrix Int)
+      matmulcontext xs' =
+        let xs = map (*2) xs'
+            ys = map (+1) xs
+            zs = map (`div` xs ! (Z_::.0::.0)) ys
+        in matmul (T2 ys zs)
 
-  let testcase' :: (Arrays b, NFData b) => ((Acc (Matrix Int, Matrix Int) -> Acc b) -> (Matrix Int, Matrix Int) -> b) -> (Prelude.String, Acc (Matrix Int, Matrix Int) -> Acc b) -> Benchmark
-      testcase' f (name, p) = env (Prelude.pure (f p, xs)) $ \ ~(p', xs') -> bench name $ nf p' (xs',xs')
+  let testcase' :: (Arrays a, Arrays b, NFData a, NFData b) => ((Acc a -> Acc b) -> a -> b) -> (Prelude.String, Acc a -> Acc b, a) -> Benchmark
+      testcase' f (name, p, input) = env (Prelude.pure (f p, input)) $ \ ~(p', xs') -> bench name $ nf p' xs'
 
-  let testcase :: Prelude.String -> (forall b. Arrays b =>(Acc (Matrix Int, Matrix Int) -> Acc b) -> (Matrix Int, Matrix Int) -> b) -> Benchmark
-      testcase name f = bgroup name $ [
-        testcase' f ("matmul", matmul)
-        --, testcase' f ("forwardbad",greedyForwardBad)
-        --, testcase' f ("backwardbad", greedyBackwardBad)
+  let testcase :: Prelude.String -> (forall a b. (Arrays a, Arrays b) =>(Acc a -> Acc b) -> a -> b) -> Benchmark
+      testcase name f = bgroup name 
+        [ 
+          -- testcase' f ("matmulcontext", matmulcontext, ys)
+        --   testcase' f ("matmul", matmul, (ys, zs))
+          testcase' f ("forwardbad",greedyForwardBad, xs)
+        , testcase' f ("backwardbad", greedyBackwardBad, xs')
         ]
-    
-  defaultMainWith (defaultConfig { timeLimit = 5*60, resamples = 10000, csvFile = Just "benchmarksoutput"}) $ Prelude.map (\obj -> testcase (show obj) (runNWithObj @Native obj))
+  
+  -- benchmarkmain
+
+  -- putStrLn "readswrites"
+  -- putStrLn $ testWithObjective @UniformScheduleFun @NativeKernel IntermediateArrays (greedyForwardBad)
+  -- putStrLn "down"
+  -- putStrLn $ testBench   @UniformScheduleFun @NativeKernel GreedyDown (greedyForwardBad)
+  -- putStrLn "up"
+  -- putStrLn $ testBench   @UniformScheduleFun @NativeKernel GreedyUp (greedyForwardBad)
+  
+  
+
+  defaultMainWith (defaultConfig { timeLimit = 5*60, resamples = 10000, csvFile = Just "greediesarebad.csv"}) $ Prelude.map (\obj -> testcase (show obj) (runNWithObj @Native obj))
     [ 
       Everything
-    , NumClusters
-    , ArrayReads
-    , ArrayReadsWrites
-    , IntermediateArrays
-    , FusedEdges
+    -- , NumClusters
+    -- , ArrayReads
+    --  ArrayReadsWrites
+    -- , IntermediateArrays
+    -- , FusedEdges
     ]
     Prelude.<> Prelude.map (\b -> testcase (show b) (runNBench @Native b))
     [ GreedyUp
