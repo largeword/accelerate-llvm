@@ -7,25 +7,28 @@ resolver: lts-21.7
 packages:
 - accelerate-llvm
 - accelerate-llvm-native
-- accelerate-llvm-ptx
+# - accelerate-llvm-ptx
 
 extra-deps:
 - cuda-0.11.0.1
 - nvvm-0.10.0.1
 - OptDir-0.0.4
 - bytestring-encoding-0.1.2.0
-- ../accelerate
-- github: msakai/haskell-MIP
-  commit: 4295aa21a24a30926b55770c55ac00f749fb8a39
+
+- github: largeword/accelerate
+  commit: 2d1d5e906f165a404d8454181a244b2ab00bc786
+
+- github: largeword/haskell-MIP
+  commit: a5297e9062e319291c26fad2c85ac715fc31574f
   subdirs:
   - MIP
 
 - github: llvm-hs/llvm-hs
   commit: e4b3cfa47e72f094ab109884f18acfc666b0fb7d  # llvm-15
-  # commit: 423220bffac4990d019fc088c46c5f25310d5a33  # llvm-12
   subdirs:
     - llvm-hs
     - llvm-hs-pure
+
 # - highs-lp-0.0
 # - linear-programming-0.0.1
 # - comfort-array-0.5.5

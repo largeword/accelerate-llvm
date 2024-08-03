@@ -276,15 +276,20 @@ instance MakesILP NativeOp where
         -- <> foldMap (\lin -> fused lin l .==. int 1) lIns
         <> inrankifmanifest (ShapeRsnoc shr) l)
       (defaultBounds l)
+  -- mkGraph _ _ _ = mempty
 
+  -- labelLabelledArg vars l (L x@(ArgArray In  (ArrayR shr _) _ _) y) = LOp x y (vars M.! InDir  l, rank shr)
+  -- labelLabelledArg vars l (L x@(ArgArray Out (ArrayR shr _) _ _) y) = LOp x y (vars M.! OutDir l, rank shr)
   labelLabelledArg :: M.Map (Graph.Var NativeOp) Int -> Label -> LabelledArg env a -> LabelledArgOp NativeOp env a
   labelLabelledArg vars l (L x@(ArgArray In  _ _ _) y) = LOp x y (vars M.! InDir  l, vars M.!  InDims l)
   labelLabelledArg vars l (L x@(ArgArray Out _ _ _) y) = LOp x y (vars M.! OutDir l, vars M.! OutDims l)
   labelLabelledArg _ _ (L x y) = LOp x y (0,0)
+  
   getClusterArg :: LabelledArgOp NativeOp env a -> BackendClusterArg NativeOp a
   getClusterArg (LOp _ _ (_, d)) = BCAN d
   -- For each label: If the output is manifest, then its direction is negative (i.e. not in a backpermuted order)
   finalize = foldMap $ \l -> timesN (manifest l) .>. ILP.c (OutDir l)
+  -- finalize = finalizeNoFusion
 
   encodeBackendClusterArg (BCAN i) = intHost $(hashQ ("BCAN" :: String)) <> intHost i
 

@@ -17,3 +17,4 @@ local/
 .ipynb_checkpoints
 /accelerate-llvm-native/accelerate-llvm-native.buildinfo
 /cabal.project.freeze
+.vscode/
