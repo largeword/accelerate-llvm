@@ -276,11 +276,13 @@ instance MakesILP NativeOp where
         -- <> foldMap (\lin -> fused lin l .==. int 1) lIns
         <> inrankifmanifest (ShapeRsnoc shr) l)
       (defaultBounds l)
+  -- Uncomment the following line and comment out all above lines of mkGraph to disable fusion
   -- mkGraph _ _ _ = mempty
 
+  labelLabelledArg :: M.Map (Graph.Var NativeOp) Int -> Label -> LabelledArg env a -> LabelledArgOp NativeOp env a
   -- labelLabelledArg vars l (L x@(ArgArray In  (ArrayR shr _) _ _) y) = LOp x y (vars M.! InDir  l, rank shr)
   -- labelLabelledArg vars l (L x@(ArgArray Out (ArrayR shr _) _ _) y) = LOp x y (vars M.! OutDir l, rank shr)
-  labelLabelledArg :: M.Map (Graph.Var NativeOp) Int -> Label -> LabelledArg env a -> LabelledArgOp NativeOp env a
+  -- Comment out the following two lines and uncomment the above two lines to disable fusion
   labelLabelledArg vars l (L x@(ArgArray In  _ _ _) y) = LOp x y (vars M.! InDir  l, vars M.!  InDims l)
   labelLabelledArg vars l (L x@(ArgArray Out _ _ _) y) = LOp x y (vars M.! OutDir l, vars M.! OutDims l)
   labelLabelledArg _ _ (L x y) = LOp x y (0,0)
@@ -289,6 +291,7 @@ instance MakesILP NativeOp where
   getClusterArg (LOp _ _ (_, d)) = BCAN d
   -- For each label: If the output is manifest, then its direction is negative (i.e. not in a backpermuted order)
   finalize = foldMap $ \l -> timesN (manifest l) .>. ILP.c (OutDir l)
+  -- Uncomment the following line and comment out the above line to disable fusion
   -- finalize = finalizeNoFusion
 
   encodeBackendClusterArg (BCAN i) = intHost $(hashQ ("BCAN" :: String)) <> intHost i
